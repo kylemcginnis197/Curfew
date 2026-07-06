@@ -21,6 +21,10 @@ const (
 	modeInput
 	modeConfirmChain
 	modeConfirmRemove
+	modeConfirmRemoveProvider
+	modeAddType
+	modeAddName
+	modeAddDir
 )
 
 // earliestAnchorMin is the earliest wall-clock minute-of-day an auto-chained
@@ -65,13 +69,14 @@ func (m Model) enterEdit(provider string) Model {
 }
 
 // editItems describes the layout of the editor's flat, arrow-navigable list:
-// [Fire now] · reset rows · [Add reset time] · [Days row].
+// [Fire now] · reset rows · [Add reset time] · [Days row] · [Remove provider].
 type editItems struct {
 	fireIdx    int
 	firstReset int
 	resetCount int
 	addIdx     int
 	daysIdx    int
+	removeIdx  int
 	count      int
 }
 
@@ -80,7 +85,8 @@ func (m Model) items() editItems {
 	it := editItems{fireIdx: 0, firstReset: 1, resetCount: r}
 	it.addIdx = 1 + r
 	it.daysIdx = it.addIdx + 1
-	it.count = it.daysIdx + 1
+	it.removeIdx = it.daysIdx + 1
+	it.count = it.removeIdx + 1
 	return it
 }
 
@@ -125,6 +131,10 @@ func (m Model) activate(it editItems) (tea.Model, tea.Cmd) {
 		return m, fireCmd(m.editProvider)
 	case m.editSel == it.addIdx:
 		m.mode = modeInput
+		m.input.Prompt = "add reset time: "
+		m.input.Placeholder = "e.g. 8pm or 20:00"
+		m.input.Width = 12
+		m.input.CharLimit = 8
 		m.input.SetValue("")
 		m.input.Focus()
 		m.flash = ""
@@ -135,6 +145,9 @@ func (m Model) activate(it editItems) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.persist("days updated")
+	case m.editSel == it.removeIdx:
+		m.mode = modeConfirmRemoveProvider
+		return m, nil
 	default: // a reset row is focused → confirm removal
 		resets := providerResets(m.cfg, m.editProvider)
 		if i := m.editSel - it.firstReset; i >= 0 && i < len(resets) {
@@ -504,6 +517,9 @@ func (m Model) viewEdit() string {
 	}
 	b.WriteString("\n")
 
+	// Remove-provider item.
+	b.WriteString("\n" + item(it.removeIdx, "🗑  Remove provider") + "\n")
+
 	// Mode-specific prompt + contextual footer.
 	switch m.mode {
 	case modeInput:
@@ -518,6 +534,9 @@ func (m Model) viewEdit() string {
 		b.WriteString(dimStyle.Render("  ↑/↓ choose · Enter confirm · Esc cancel"))
 	case modeConfirmRemove:
 		b.WriteString("\n  " + warnStyle.Render("Remove reset "+m.pendingReset+"?") + "\n")
+		b.WriteString(dimStyle.Render("  Enter remove · Esc cancel"))
+	case modeConfirmRemoveProvider:
+		b.WriteString("\n  " + warnStyle.Render("Remove provider "+m.editProvider+" and its schedule?") + "\n")
 		b.WriteString(dimStyle.Render("  Enter remove · Esc cancel"))
 	default:
 		hint := "↑/↓ move · Enter select · Esc back"

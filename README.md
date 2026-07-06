@@ -93,6 +93,19 @@ days      = ["Mon", "Tue", "Wed", "Thu", "Fri"]
 
 Edits are hot-reloaded — no restart needed.
 
+### Editing from the TUI
+
+Everything above is editable in the TUI without touching the file, using only
+arrow keys / Enter / Esc:
+
+- **Dashboard** — `↑/↓` select a provider, `Enter` open it, or select
+  `＋ Add provider` to create one (pick `claude`/`codex`, name it, and set its
+  config directory — which is how you point it at a specific account/subscription).
+- **Provider editor** — a navigable list: `Fire now` · reset times (each showing
+  its computed anchor) · `＋ Add reset time` · a `Days:` row (`←/→` + `Enter` to
+  toggle) · `🗑 Remove provider`. Adding an evening reset offers to auto-fill the
+  earlier chained resets.
+
 ### Two Claude subscriptions (claude-1 / claude-2)
 
 Curfew separates two Claude subscriptions by pointing each provider at a

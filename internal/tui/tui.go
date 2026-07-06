@@ -51,6 +51,11 @@ type Model struct {
 	input        textinput.Model
 	pendingReset string   // reset time awaiting the add/chain/remove decision
 	pendingChain []string // full chain offered for the pending reset
+
+	// Add-provider flow.
+	addTypeSel int    // cursor over providerKinds
+	addKind    string // chosen kind ("claude"/"codex")
+	addName    string // chosen provider name
 }
 
 func newModel() Model {
@@ -131,6 +136,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateConfirmChain(msg)
 		case modeConfirmRemove:
 			return m.updateConfirmRemove(msg)
+		case modeConfirmRemoveProvider:
+			return m.updateConfirmRemoveProvider(msg)
+		case modeAddType:
+			return m.updateAddType(msg)
+		case modeAddName:
+			return m.updateAddName(msg)
+		case modeAddDir:
+			return m.updateAddDir(msg)
 		case modeEdit:
 			return m.updateEdit(msg)
 		default:
@@ -143,6 +156,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // updateDashboard handles keys on the read-only dashboard. Navigation is
 // arrows + Enter + Esc only.
 func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// The provider list has one extra selectable row at the end: "Add provider".
+	addIdx := len(m.status.Providers)
 	switch msg.String() {
 	case "q", "ctrl+c", "esc":
 		return m, tea.Quit
@@ -151,15 +166,19 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.sel--
 		}
 	case "down":
-		if m.sel < len(m.status.Providers)-1 {
+		if m.sel < addIdx {
 			m.sel++
 		}
 	case "enter":
 		// When the daemon is down, Enter installs & starts it; otherwise Enter
-		// opens the selected provider's editor (which also offers "Fire now").
+		// opens the selected provider's editor, or the add-provider flow when the
+		// "Add provider" row is selected.
 		if m.err != nil {
 			m.flash = "installing service…"
 			return m, installCmd()
+		}
+		if m.sel == addIdx {
+			return m.startAddProvider(), nil
 		}
 		if p := m.selected(); p != "" {
 			return m.enterEdit(p), nil
@@ -188,7 +207,10 @@ var (
 )
 
 func (m Model) View() string {
-	if m.mode != modeDashboard {
+	switch m.mode {
+	case modeAddType, modeAddName, modeAddDir:
+		return m.viewAddProvider()
+	case modeEdit, modeInput, modeConfirmChain, modeConfirmRemove, modeConfirmRemoveProvider:
 		return m.viewEdit()
 	}
 	var b strings.Builder
@@ -238,6 +260,12 @@ func (m Model) View() string {
 				fmt.Sprintf("%-10s %-22s %-22s", state, window, next)
 		}
 		b.WriteString(row + "\n")
+	}
+	// "Add provider" row.
+	if m.sel == len(s.Providers) {
+		b.WriteString(selStyle.Render("▸ ＋ Add provider") + "\n")
+	} else {
+		b.WriteString(dimStyle.Render("  ＋ Add provider") + "\n")
 	}
 
 	// Recent history.
