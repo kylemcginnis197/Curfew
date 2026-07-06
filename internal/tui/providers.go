@@ -176,7 +176,7 @@ func (m Model) updateConfirmRemoveProvider(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 // viewAddProvider renders the add-provider screens.
 func (m Model) viewAddProvider() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("⏰ Curfew · add provider") + "\n\n")
+	b.WriteString(titleStyle.Render("Curfew") + dimStyle.Render(" · add provider") + "\n\n")
 	switch m.mode {
 	case modeAddType:
 		b.WriteString("  Provider type:\n")

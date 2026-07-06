@@ -457,8 +457,7 @@ func minutesOfDay(hhmm string) (int, bool) {
 
 func (m Model) viewEdit() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("⏰ Curfew · edit schedule") + "  ")
-	b.WriteString(dimStyle.Render(m.editProvider) + "\n\n")
+	b.WriteString(titleStyle.Render("Curfew") + dimStyle.Render(" · edit schedule · ") + m.editProvider + "\n\n")
 
 	if m.cfg == nil {
 		b.WriteString(warnStyle.Render("no config loaded") + "\n")
@@ -494,11 +493,11 @@ func (m Model) viewEdit() string {
 				anchor += " (prev day)"
 			}
 		}
-		b.WriteString(item(it.firstReset+i, fmt.Sprintf("%-8s → anchor %s", r, anchor)) + "\n")
+		b.WriteString(item(it.firstReset+i, fmt.Sprintf("%-8s→  %s", r, anchor)) + "\n")
 	}
 
 	// Add + Days items.
-	b.WriteString("\n" + item(it.addIdx, "＋ Add reset time") + "\n")
+	b.WriteString("\n" + item(it.addIdx, "+ Add reset time") + "\n")
 
 	b.WriteString("\n" + item(it.daysIdx, "Days:") + "  ")
 	for i, d := range weekdayOrder {
@@ -518,7 +517,7 @@ func (m Model) viewEdit() string {
 	b.WriteString("\n")
 
 	// Remove-provider item.
-	b.WriteString("\n" + item(it.removeIdx, "🗑  Remove provider") + "\n")
+	b.WriteString("\n" + item(it.removeIdx, "× Remove provider") + "\n")
 
 	// Mode-specific prompt + contextual footer.
 	switch m.mode {

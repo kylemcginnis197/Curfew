@@ -201,9 +201,27 @@ var (
 	dimStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	activeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
 	idleStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	selStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("57"))
+	selStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("231")).Background(lipgloss.Color("238")).Bold(true)
 	warnStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 	headStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("111"))
+)
+
+// padTo pads (or truncates) s to n display columns, counting runes so that
+// multibyte glyphs like → and — don't break column alignment.
+func padTo(s string, n int) string {
+	r := []rune(s)
+	if len(r) > n {
+		return string(r[:n])
+	}
+	return s + strings.Repeat(" ", n-len(r))
+}
+
+// Dashboard column widths (display columns).
+const (
+	colName  = 10
+	colState = 8
+	colWin   = 26
+	rowWidth = 74
 )
 
 func (m Model) View() string {
@@ -214,7 +232,7 @@ func (m Model) View() string {
 		return m.viewEdit()
 	}
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("⏰ Curfew") + "  ")
+	b.WriteString(titleStyle.Render("Curfew") + "  ")
 
 	if m.err != nil {
 		b.WriteString(warnStyle.Render("daemon not running"))
@@ -235,37 +253,45 @@ func (m Model) View() string {
 	b.WriteString("\n\n")
 
 	// Providers table.
-	b.WriteString(headStyle.Render(fmt.Sprintf("  %-10s %-10s %-22s %-22s", "PROVIDER", "STATE", "WINDOW", "NEXT ANCHOR")))
-	b.WriteString("\n")
+	header := "  " + padTo("PROVIDER", colName) + " " + padTo("STATE", colState) + " " +
+		padTo("WINDOW", colWin) + " NEXT ANCHOR"
+	b.WriteString(headStyle.Render(header) + "\n")
 	for i, p := range s.Providers {
-		cursor := "  "
-		if i == m.sel {
-			cursor = "▸ "
-		}
-		state := idleStyle.Render("idle")
-		window := dimStyle.Render("—")
+		stateTxt, winTxt := "idle", "—"
 		if p.Active {
-			state = activeStyle.Render("ACTIVE")
-			window = fmt.Sprintf("%s→%s (%s left)",
+			stateTxt = "ACTIVE"
+			winTxt = fmt.Sprintf("%s→%s (%s left)",
 				p.WindowStart.Local().Format("15:04"), p.WindowEnd.Local().Format("15:04"),
 				short(time.Until(p.WindowEnd)))
 		}
-		next := dimStyle.Render("—")
+		nextTxt := "—"
 		if !p.NextAnchor.IsZero() {
-			next = fmt.Sprintf("%s → reset %s", p.NextAnchor.Local().Format("Mon 15:04"), p.NextReset.Local().Format("15:04"))
+			nextTxt = fmt.Sprintf("%s → reset %s", p.NextAnchor.Local().Format("Mon 15:04"), p.NextReset.Local().Format("15:04"))
 		}
-		row := fmt.Sprintf("%s%-10s %-10s %-22s %-22s", cursor, p.Name, state, window, next)
+
 		if i == m.sel {
-			row = selStyle.Render(fmt.Sprintf("%s%-10s ", cursor, p.Name)) +
-				fmt.Sprintf("%-10s %-22s %-22s", state, window, next)
+			plain := "▸ " + padTo(p.Name, colName) + " " + padTo(stateTxt, colState) + " " +
+				padTo(winTxt, colWin) + " " + nextTxt
+			b.WriteString(selStyle.Render(padTo(plain, rowWidth)) + "\n")
+			continue
 		}
-		b.WriteString(row + "\n")
+		stateCol := idleStyle.Render(padTo(stateTxt, colState))
+		winCol := dimStyle.Render(padTo(winTxt, colWin))
+		nextCol := dimStyle.Render(nextTxt)
+		if p.Active {
+			stateCol = activeStyle.Render(padTo(stateTxt, colState))
+			winCol = padTo(winTxt, colWin)
+		}
+		if !p.NextAnchor.IsZero() {
+			nextCol = nextTxt
+		}
+		b.WriteString("  " + padTo(p.Name, colName) + " " + stateCol + " " + winCol + " " + nextCol + "\n")
 	}
 	// "Add provider" row.
 	if m.sel == len(s.Providers) {
-		b.WriteString(selStyle.Render("▸ ＋ Add provider") + "\n")
+		b.WriteString(selStyle.Render(padTo("▸ + Add provider", rowWidth)) + "\n")
 	} else {
-		b.WriteString(dimStyle.Render("  ＋ Add provider") + "\n")
+		b.WriteString(dimStyle.Render("  + Add provider") + "\n")
 	}
 
 	// Recent history.
