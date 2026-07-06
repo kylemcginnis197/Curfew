@@ -1,0 +1,18 @@
+# Build output
+/dist/
+/curfew
+/curfew.exe
+*.test
+*.out
+
+# Local scratch / editor
+*.tmp
+*.swp
+.DS_Store
+.idea/
+.vscode/
+
+# Never commit personal runtime data (these live outside the repo, but guard anyway)
+config.toml
+*.db
+daemon.json
