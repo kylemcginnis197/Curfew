@@ -20,6 +20,7 @@ const (
 	modeEdit
 	modeInput
 	modeConfirmChain
+	modeConfirmRemove
 )
 
 // earliestAnchorMin is the earliest wall-clock minute-of-day an auto-chained
@@ -50,70 +51,98 @@ func (m Model) enterEdit(provider string) Model {
 	}
 	m.mode = modeEdit
 	m.editProvider = provider
-	m.resetSel = 0
-	m.daysFocus = false
 	m.daySel = 0
 	m.flash = ""
+	// Start focus on the first reset row if any, else the "Add" item — never on
+	// "Fire now", so an immediate Enter can't fire by accident.
+	it := m.items()
+	if it.resetCount > 0 {
+		m.editSel = it.firstReset
+	} else {
+		m.editSel = it.addIdx
+	}
 	return m
+}
+
+// editItems describes the layout of the editor's flat, arrow-navigable list:
+// [Fire now] · reset rows · [Add reset time] · [Days row].
+type editItems struct {
+	fireIdx    int
+	firstReset int
+	resetCount int
+	addIdx     int
+	daysIdx    int
+	count      int
+}
+
+func (m Model) items() editItems {
+	r := len(providerResets(m.cfg, m.editProvider))
+	it := editItems{fireIdx: 0, firstReset: 1, resetCount: r}
+	it.addIdx = 1 + r
+	it.daysIdx = it.addIdx + 1
+	it.count = it.daysIdx + 1
+	return it
 }
 
 // --- key handling ---
 
+// updateEdit drives the flat item list with arrows + Enter + Esc. Left/Right
+// only matter while the Days row is focused.
 func (m Model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	resets := providerResets(m.cfg, m.editProvider)
+	it := m.items()
 	switch msg.String() {
 	case "esc", "q":
-		if m.daysFocus {
-			m.daysFocus = false
-			return m, nil
-		}
 		m.mode = modeDashboard
 		m.flash = ""
 		return m, fetch() // refresh dashboard anchors immediately
-	case "w":
-		m.daysFocus = !m.daysFocus
-		return m, nil
-	case "left", "h":
-		if m.daysFocus && m.daySel > 0 {
+	case "up":
+		if m.editSel > 0 {
+			m.editSel--
+		}
+	case "down":
+		if m.editSel < it.count-1 {
+			m.editSel++
+		}
+	case "left":
+		if m.editSel == it.daysIdx && m.daySel > 0 {
 			m.daySel--
 		}
-	case "right", "l":
-		if m.daysFocus && m.daySel < len(weekdayOrder)-1 {
+	case "right":
+		if m.editSel == it.daysIdx && m.daySel < len(weekdayOrder)-1 {
 			m.daySel++
 		}
-	case "up", "k":
-		if !m.daysFocus && m.resetSel > 0 {
-			m.resetSel--
-		}
-	case "down", "j":
-		if !m.daysFocus && m.resetSel < len(resets)-1 {
-			m.resetSel++
-		}
-	case " ", "space":
-		if m.daysFocus {
-			if err := toggleDay(m.cfg, m.editProvider, weekdayOrder[m.daySel]); err != nil {
-				m.flash = err.Error()
-				return m, nil
-			}
-			return m.persist("days updated")
-		}
-	case "a":
+	case "enter":
+		return m.activate(it)
+	}
+	return m, nil
+}
+
+// activate performs the action for the currently focused item.
+func (m Model) activate(it editItems) (tea.Model, tea.Cmd) {
+	switch {
+	case m.editSel == it.fireIdx:
+		m.flash = "anchoring " + m.editProvider + "…"
+		return m, fireCmd(m.editProvider)
+	case m.editSel == it.addIdx:
 		m.mode = modeInput
 		m.input.SetValue("")
 		m.input.Focus()
 		m.flash = ""
 		return m, nil
-	case "d", "x":
-		if !m.daysFocus && m.resetSel < len(resets) {
-			removed := resets[m.resetSel]
-			removeReset(m.cfg, m.editProvider, removed)
-			if m.resetSel > 0 {
-				m.resetSel--
-			}
-			return m.persist("removed " + removed)
+	case m.editSel == it.daysIdx:
+		if err := toggleDay(m.cfg, m.editProvider, weekdayOrder[m.daySel]); err != nil {
+			m.flash = err.Error()
+			return m, nil
 		}
+		return m.persist("days updated")
+	default: // a reset row is focused → confirm removal
+		resets := providerResets(m.cfg, m.editProvider)
+		if i := m.editSel - it.firstReset; i >= 0 && i < len(resets) {
+			m.pendingReset = resets[i]
+			m.mode = modeConfirmRemove
+		}
+		return m, nil
 	}
-	return m, nil
 }
 
 func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -131,6 +160,7 @@ func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		chain := chainResets(norm, m.providerWindow())
 		if len(chain) > 1 {
 			m.pendingChain = chain
+			m.chainSel = 0
 			m.mode = modeConfirmChain
 			return m, nil
 		}
@@ -142,16 +172,21 @@ func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+// updateConfirmChain lets the user pick "add all" vs "just this one" with the
+// arrows, Enter to confirm, Esc to cancel.
+func (m Model) updateConfirmChain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "y", "Y":
-		for _, r := range m.pendingChain {
-			addReset(m.cfg, m.editProvider, r)
+	case "up", "down":
+		m.chainSel = 1 - m.chainSel
+	case "enter":
+		if m.chainSel == 0 {
+			for _, r := range m.pendingChain {
+				addReset(m.cfg, m.editProvider, r)
+			}
+			n := len(m.pendingChain)
+			m.pendingChain = nil
+			return m.persist(fmt.Sprintf("added %d resets", n))
 		}
-		n := len(m.pendingChain)
-		m.pendingChain = nil
-		return m.persist(fmt.Sprintf("added %d resets", n))
-	case "n", "N", "enter":
 		addReset(m.cfg, m.editProvider, m.pendingReset)
 		one := m.pendingReset
 		m.pendingChain = nil
@@ -164,9 +199,23 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// updateConfirmRemove removes the focused reset on Enter, cancels on Esc.
+func (m Model) updateConfirmRemove(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		removed := m.pendingReset
+		removeReset(m.cfg, m.editProvider, removed)
+		return m.persist("removed " + removed)
+	case "esc":
+		m.mode = modeEdit
+		return m, nil
+	}
+	return m, nil
+}
+
 // persist saves the edited config (the daemon hot-reloads it) and returns to the
 // edit screen. On a validation error it reloads from disk to discard the bad
-// edit.
+// edit. It clamps the item cursor after the list changes size.
 func (m Model) persist(flash string) (tea.Model, tea.Cmd) {
 	m.mode = modeEdit
 	if m.cfg == nil {
@@ -180,9 +229,8 @@ func (m Model) persist(flash string) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	// Clamp cursor after the list may have shrunk/grown.
-	if n := len(providerResets(m.cfg, m.editProvider)); m.resetSel >= n && n > 0 {
-		m.resetSel = n - 1
+	if it := m.items(); m.editSel >= it.count {
+		m.editSel = it.count - 1
 	}
 	m.flash = flash
 	return m, fetch()
@@ -401,48 +449,51 @@ func (m Model) viewEdit() string {
 
 	if m.cfg == nil {
 		b.WriteString(warnStyle.Render("no config loaded") + "\n")
-		b.WriteString(dimStyle.Render("\nesc back"))
+		b.WriteString(dimStyle.Render("\nEsc back"))
 		return b.String()
 	}
 
+	it := m.items()
 	win := m.providerWindow()
 	resets := providerResets(m.cfg, m.editProvider)
-	b.WriteString(headStyle.Render(fmt.Sprintf("  %-8s   %s", "RESET", "ANCHOR")) + "\n")
-	if len(resets) == 0 {
-		b.WriteString(dimStyle.Render("  (none — press 'a' to add)\n"))
-	}
-	for i, r := range resets {
-		cursor := "  "
-		if !m.daysFocus && i == m.resetSel {
-			cursor = "▸ "
+
+	// cursorLabel renders an item's leading label, highlighted when focused.
+	item := func(idx int, label string) string {
+		if m.editSel == idx {
+			return selStyle.Render("▸ "+label)
 		}
-		anchor := dimStyle.Render("?")
-		if a, err := schedule.AnchorForReset(win, r); err == nil {
-			label := fmt.Sprintf("%02d:%02d", a.Hour, a.Min)
-			if a.DayShift < 0 {
-				label += " (prev day)"
-			}
-			anchor = label
-		}
-		line := fmt.Sprintf("%s%-8s → %s", cursor, r, anchor)
-		if !m.daysFocus && i == m.resetSel {
-			line = selStyle.Render(fmt.Sprintf("%s%-8s ", cursor, r)) + fmt.Sprintf("→ %s", anchor)
-		}
-		b.WriteString(line + "\n")
+		return "  " + label
 	}
 
-	// Weekday row.
-	b.WriteString("\n" + headStyle.Render("  DAYS") + "  ")
-	if m.daysFocus {
-		b.WriteString(dimStyle.Render("(←/→ move · space toggle · w/esc back)"))
+	// Fire now.
+	b.WriteString(item(it.fireIdx, "Fire now") + dimStyle.Render("  (anchor this provider immediately)") + "\n\n")
+
+	// Reset rows with computed anchors.
+	b.WriteString(headStyle.Render(fmt.Sprintf("  %-8s   %s", "RESET", "ANCHOR")) + "\n")
+	if len(resets) == 0 {
+		b.WriteString(dimStyle.Render("  (none yet)\n"))
 	}
-	b.WriteString("\n  ")
+	for i, r := range resets {
+		anchor := "?"
+		if a, err := schedule.AnchorForReset(win, r); err == nil {
+			anchor = fmt.Sprintf("%02d:%02d", a.Hour, a.Min)
+			if a.DayShift < 0 {
+				anchor += " (prev day)"
+			}
+		}
+		b.WriteString(item(it.firstReset+i, fmt.Sprintf("%-8s → anchor %s", r, anchor)) + "\n")
+	}
+
+	// Add + Days items.
+	b.WriteString("\n" + item(it.addIdx, "＋ Add reset time") + "\n")
+
+	b.WriteString("\n" + item(it.daysIdx, "Days:") + "  ")
 	for i, d := range weekdayOrder {
 		tok := weekdayToken[d]
-		cell := "  " + tok + "  "
 		on := dayEnabled(m.cfg, m.editProvider, d)
+		var cell string
 		switch {
-		case m.daysFocus && i == m.daySel:
+		case m.editSel == it.daysIdx && i == m.daySel:
 			cell = selStyle.Render(" " + tok + " ")
 		case on:
 			cell = activeStyle.Render(" " + tok + " ")
@@ -453,21 +504,39 @@ func (m Model) viewEdit() string {
 	}
 	b.WriteString("\n")
 
-	// Mode-specific prompt lines.
+	// Mode-specific prompt + contextual footer.
 	switch m.mode {
 	case modeInput:
 		b.WriteString("\n  " + m.input.View() + "\n")
-		b.WriteString(dimStyle.Render("  enter confirm · esc cancel"))
+		b.WriteString(dimStyle.Render("  Enter confirm · Esc cancel"))
 	case modeConfirmChain:
-		b.WriteString("\n  " + warnStyle.Render("Also add the earlier chained resets? ") +
-			strings.Join(m.pendingChain, ", ") + "\n")
-		b.WriteString(dimStyle.Render("  y add all · n just " + m.pendingReset + " · esc cancel"))
+		b.WriteString("\n  " + warnStyle.Render("Also add the earlier chained resets?") + "\n")
+		optAll := fmt.Sprintf("Add all: %s", strings.Join(m.pendingChain, ", "))
+		optOne := "Just " + m.pendingReset
+		b.WriteString("  " + chainOpt(m.chainSel == 0, optAll) + "\n")
+		b.WriteString("  " + chainOpt(m.chainSel == 1, optOne) + "\n")
+		b.WriteString(dimStyle.Render("  ↑/↓ choose · Enter confirm · Esc cancel"))
+	case modeConfirmRemove:
+		b.WriteString("\n  " + warnStyle.Render("Remove reset "+m.pendingReset+"?") + "\n")
+		b.WriteString(dimStyle.Render("  Enter remove · Esc cancel"))
 	default:
-		b.WriteString(dimStyle.Render("\n  a add · d remove · w edit days · esc back"))
+		hint := "↑/↓ move · Enter select · Esc back"
+		if m.editSel == it.daysIdx {
+			hint = "↑/↓ move · ←/→ pick day · Enter toggle · Esc back"
+		}
+		b.WriteString(dimStyle.Render("\n  " + hint))
 	}
 
 	if m.flash != "" {
 		b.WriteString("\n\n  " + warnStyle.Render(m.flash))
 	}
 	return b.String()
+}
+
+// chainOpt renders one selectable option in the chain prompt.
+func chainOpt(selected bool, label string) string {
+	if selected {
+		return selStyle.Render("▸ " + label)
+	}
+	return "  " + label
 }

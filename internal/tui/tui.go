@@ -45,11 +45,11 @@ type Model struct {
 	cfg          *config.Config // authoritative for editing (loaded from disk)
 	cfgPath      string
 	editProvider string         // provider being edited
-	resetSel     int            // cursor within the reset list
-	daysFocus    bool           // editing the weekday row instead of resets
-	daySel       int            // cursor within the weekday row
+	editSel      int            // cursor over the editor's focusable items
+	daySel       int            // cursor within the weekday row (when it's focused)
+	chainSel     int            // 0 = add whole chain, 1 = add just the one
 	input        textinput.Model
-	pendingReset string   // reset time awaiting the auto-chain decision
+	pendingReset string   // reset time awaiting the add/chain/remove decision
 	pendingChain []string // full chain offered for the pending reset
 }
 
@@ -128,7 +128,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case modeInput:
 			return m.updateInput(msg)
 		case modeConfirmChain:
-			return m.updateConfirm(msg)
+			return m.updateConfirmChain(msg)
+		case modeConfirmRemove:
+			return m.updateConfirmRemove(msg)
 		case modeEdit:
 			return m.updateEdit(msg)
 		default:
@@ -138,34 +140,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// updateDashboard handles keys on the read-only dashboard.
+// updateDashboard handles keys on the read-only dashboard. Navigation is
+// arrows + Enter + Esc only.
 func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c", "esc":
 		return m, tea.Quit
-	case "up", "k":
+	case "up":
 		if m.sel > 0 {
 			m.sel--
 		}
-	case "down", "j":
+	case "down":
 		if m.sel < len(m.status.Providers)-1 {
 			m.sel++
 		}
-	case "r":
-		m.flash = "refreshing…"
-		return m, fetch()
-	case "f":
-		if p := m.selected(); p != "" {
-			return m, fireCmd(p)
-		}
-	case "e", "enter":
-		if p := m.selected(); p != "" {
-			return m.enterEdit(p), nil
-		}
-	case "i":
+	case "enter":
+		// When the daemon is down, Enter installs & starts it; otherwise Enter
+		// opens the selected provider's editor (which also offers "Fire now").
 		if m.err != nil {
 			m.flash = "installing service…"
 			return m, installCmd()
+		}
+		if p := m.selected(); p != "" {
+			return m.enterEdit(p), nil
 		}
 	}
 	return m, nil
@@ -202,9 +199,9 @@ func (m Model) View() string {
 		b.WriteString("\n\n")
 		b.WriteString(dimStyle.Render(m.err.Error()))
 		b.WriteString("\n\n")
-		b.WriteString("Press " + headStyle.Render("i") + " to install & start the background service, or run ")
+		b.WriteString("Press " + headStyle.Render("Enter") + " to install & start the background service, or run ")
 		b.WriteString(headStyle.Render("curfew install") + ".\n")
-		b.WriteString(dimStyle.Render("\nq quit"))
+		b.WriteString(dimStyle.Render("\nEnter install · Esc quit"))
 		if m.flash != "" {
 			b.WriteString("\n\n" + warnStyle.Render(m.flash))
 		}
@@ -260,7 +257,7 @@ func (m Model) View() string {
 	if m.flash != "" {
 		b.WriteString("\n" + warnStyle.Render(m.flash) + "\n")
 	}
-	b.WriteString(dimStyle.Render("\n↑/↓ select · e edit schedule · f fire now · r refresh · q quit"))
+	b.WriteString(dimStyle.Render("\n↑/↓ select · Enter open · Esc quit"))
 	return b.String()
 }
 
