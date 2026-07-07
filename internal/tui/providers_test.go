@@ -39,6 +39,32 @@ func TestAddProvider(t *testing.T) {
 	}
 }
 
+func TestSetProviderCommand(t *testing.T) {
+	c := cfgWithProviders()
+	if got := providerCommand(c, "claude-1"); got != "claude -p 'x'" {
+		t.Fatalf("providerCommand = %q, want the seeded command", got)
+	}
+	if err := setProviderCommand(c, "claude-1", "  claude -p 'new' --model haiku  "); err != nil {
+		t.Fatal(err)
+	}
+	if got := providerCommand(c, "claude-1"); got != "claude -p 'new' --model haiku" {
+		t.Errorf("command = %q (should be updated and trimmed)", got)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("config invalid after edit: %v", err)
+	}
+}
+
+func TestSetProviderCommandErrors(t *testing.T) {
+	c := cfgWithProviders()
+	if err := setProviderCommand(c, "claude-1", "   "); err == nil {
+		t.Error("empty command should error")
+	}
+	if err := setProviderCommand(c, "nope", "claude -p x"); err == nil {
+		t.Error("unknown provider should error")
+	}
+}
+
 func TestAddProviderErrors(t *testing.T) {
 	c := cfgWithProviders()
 	if err := addProvider(c, "", "claude -p x"); err == nil {

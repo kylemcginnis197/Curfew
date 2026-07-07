@@ -19,6 +19,7 @@ const (
 	modeDashboard mode = iota
 	modeEdit
 	modeInput
+	modeEditCommand
 	modeConfirmChain
 	modeConfirmRemove
 	modeConfirmRemoveProvider
@@ -68,9 +69,10 @@ func (m Model) enterEdit(provider string) Model {
 }
 
 // editItems describes the layout of the editor's flat, arrow-navigable list:
-// [Fire now] · reset rows · [Add reset time] · [Days row] · [Remove provider].
+// [Fire now] · [Command] · reset rows · [Add reset time] · [Days row] · [Remove provider].
 type editItems struct {
 	fireIdx    int
+	cmdIdx     int
 	firstReset int
 	resetCount int
 	addIdx     int
@@ -81,8 +83,8 @@ type editItems struct {
 
 func (m Model) items() editItems {
 	r := len(providerResets(m.cfg, m.editProvider))
-	it := editItems{fireIdx: 0, firstReset: 1, resetCount: r}
-	it.addIdx = 1 + r
+	it := editItems{fireIdx: 0, cmdIdx: 1, firstReset: 2, resetCount: r}
+	it.addIdx = 2 + r
 	it.daysIdx = it.addIdx + 1
 	it.removeIdx = it.daysIdx + 1
 	it.count = it.removeIdx + 1
@@ -128,6 +130,17 @@ func (m Model) activate(it editItems) (tea.Model, tea.Cmd) {
 	case m.editSel == it.fireIdx:
 		m.flash = "anchoring " + m.editProvider + "…"
 		return m, fireCmd(m.editProvider)
+	case m.editSel == it.cmdIdx:
+		m.mode = modeEditCommand
+		m.input.Prompt = "command: "
+		m.input.Placeholder = "claude -p 'curfew: anchor'"
+		m.input.Width = 48
+		m.input.CharLimit = 256
+		m.input.SetValue(providerCommand(m.cfg, m.editProvider))
+		m.input.CursorEnd()
+		m.input.Focus()
+		m.flash = ""
+		return m, nil
 	case m.editSel == it.addIdx:
 		m.mode = modeInput
 		m.input.Prompt = "add reset time: "
@@ -478,9 +491,17 @@ func (m Model) viewEdit() string {
 
 	// fire now
 	if m.editSel == it.fireIdx {
-		b.WriteString(item(it.fireIdx, "fire now") + "\n\n")
+		b.WriteString(item(it.fireIdx, "fire now") + "\n")
 	} else {
-		b.WriteString("  " + midStyle.Render("fire now") + faintStyle.Render("   anchor now") + "\n\n")
+		b.WriteString("  " + midStyle.Render("fire now") + faintStyle.Render("   anchor now") + "\n")
+	}
+
+	// command (the shell command run to anchor this provider's limit)
+	cmd := providerCommand(m.cfg, m.editProvider)
+	if m.editSel == it.cmdIdx {
+		b.WriteString(item(it.cmdIdx, "command  "+clip(cmd, 23)) + "\n\n")
+	} else {
+		b.WriteString("  " + midStyle.Render("command") + faintStyle.Render("   "+clip(cmd, 32)) + "\n\n")
 	}
 
 	// reset → anchor rows
@@ -544,6 +565,10 @@ func (m Model) viewEdit() string {
 	case modeInput:
 		b.WriteString("\n  " + m.input.View() + "\n")
 		b.WriteString(faintStyle.Render("  enter confirm · esc cancel"))
+	case modeEditCommand:
+		b.WriteString("\n  " + dimStyle.Render("command to anchor "+m.editProvider+" (as you'd type it in a terminal)") +
+			"\n\n  " + m.input.View() + "\n")
+		b.WriteString(faintStyle.Render("  runs via your shell · enter save · esc cancel"))
 	case modeConfirmChain:
 		b.WriteString("\n  " + midStyle.Render("also add the earlier chained resets?") + "\n")
 		b.WriteString("  " + chainOpt(m.chainSel == 0, "add all: "+strings.Join(m.pendingChain, ", ")) + "\n")
@@ -567,6 +592,18 @@ func (m Model) viewEdit() string {
 		b.WriteString("\n\n  " + warnStyle.Render(m.flash))
 	}
 	return b.String()
+}
+
+// clip truncates s to n display runes, appending an ellipsis when it cuts.
+func clip(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	if n <= 1 {
+		return string(r[:n])
+	}
+	return string(r[:n-1]) + "…"
 }
 
 // chainOpt renders one selectable option in the chain prompt.

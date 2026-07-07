@@ -30,6 +30,35 @@ func addProvider(cfg *config.Config, name, command string) error {
 	return nil
 }
 
+// providerCommand returns the shell command configured to anchor a provider.
+func providerCommand(cfg *config.Config, name string) string {
+	if cfg == nil {
+		return ""
+	}
+	for i := range cfg.Providers {
+		if cfg.Providers[i].Name == name {
+			return cfg.Providers[i].Command
+		}
+	}
+	return ""
+}
+
+// setProviderCommand updates a provider's anchor command in place. It errors on
+// an empty command or an unknown provider.
+func setProviderCommand(cfg *config.Config, name, command string) error {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return fmt.Errorf("command required")
+	}
+	for i := range cfg.Providers {
+		if cfg.Providers[i].Name == name {
+			cfg.Providers[i].Command = command
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown provider %q", name)
+}
+
 // removeProvider deletes a provider and any schedules that reference it.
 func removeProvider(cfg *config.Config, name string) {
 	keptP := cfg.Providers[:0:0]
@@ -119,6 +148,27 @@ func (m Model) updateAddCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		// Open the new provider's editor so the user can add reset times.
 		return m.enterEdit(m.addName), fetch()
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+// updateEditCommand edits the focused provider's anchor command. Enter saves
+// (the daemon hot-reloads), Esc cancels back to the editor.
+func (m Model) updateEditCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeEdit
+		m.input.Prompt = "add reset time: " // restore for the schedule editor
+		return m, nil
+	case "enter":
+		if err := setProviderCommand(m.cfg, m.editProvider, m.input.Value()); err != nil {
+			m.flash = err.Error()
+			return m, nil
+		}
+		m.input.Prompt = "add reset time: " // restore for the schedule editor
+		return m.persist("command updated")
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)

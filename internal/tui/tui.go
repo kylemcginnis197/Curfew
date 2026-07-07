@@ -132,6 +132,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.mode {
 		case modeInput:
 			return m.updateInput(msg)
+		case modeEditCommand:
+			return m.updateEditCommand(msg)
 		case modeConfirmChain:
 			return m.updateConfirmChain(msg)
 		case modeConfirmRemove:
@@ -208,8 +210,12 @@ var (
 	idleStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
 	selStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("231")).Background(lipgloss.Color("236"))
 	warnStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("174")) // muted red
+	okStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("114")) // soft green
 	headStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
 )
+
+// healthGlyph is the per-provider health dot shown at the start of each row.
+const healthGlyph = "●"
 
 // padTo pads (or truncates) s to n display columns, counting runes so that
 // multibyte glyphs like → and — don't break column alignment.
@@ -229,7 +235,7 @@ func (m Model) View() string {
 	switch m.mode {
 	case modeAddName, modeAddCommand:
 		return m.viewAddProvider()
-	case modeEdit, modeInput, modeConfirmChain, modeConfirmRemove, modeConfirmRemoveProvider:
+	case modeEdit, modeInput, modeEditCommand, modeConfirmChain, modeConfirmRemove, modeConfirmRemoveProvider:
 		return m.viewEdit()
 	}
 	var b strings.Builder
@@ -265,14 +271,16 @@ func (m Model) View() string {
 		} else if !p.NextAnchor.IsZero() {
 			detail = "next " + p.NextAnchor.Local().Format("15:04")
 		}
+		hs := healthStyle(providerHealth(p.Name, s.Recent))
 		if i == m.sel {
-			plain := "  " + padTo(p.Name, 11) + padTo(stateWord, 8)
+			plain := padTo(p.Name, 11) + padTo(stateWord, 8)
 			if p.Active {
 				plain += fmt.Sprintf("resets %s   %s left", p.WindowEnd.Local().Format("15:04"), short(time.Until(p.WindowEnd)))
 			} else {
 				plain += detail
 			}
-			b.WriteString(selStyle.Render(padTo(plain, rowWidth)) + "\n")
+			dot := selStyle.Foreground(hs.GetForeground()).Render(healthGlyph)
+			b.WriteString(dot + selStyle.Render(padTo(" "+plain, rowWidth-1)) + "\n")
 			continue
 		}
 		name := brightStyle.Render(padTo(p.Name, 11))
@@ -285,7 +293,7 @@ func (m Model) View() string {
 			st = dimStyle.Render(padTo(stateWord, 8))
 			det = dimStyle.Render(detail)
 		}
-		b.WriteString("  " + name + st + det + "\n")
+		b.WriteString(hs.Render(healthGlyph) + " " + name + st + det + "\n")
 	}
 	// Add-provider row.
 	if m.sel == len(s.Providers) {
@@ -294,19 +302,9 @@ func (m Model) View() string {
 		b.WriteString("  " + accentStyle.Render("+") + dimStyle.Render(" add provider") + "\n")
 	}
 
-	// Recent.
-	b.WriteString("\n  " + dimStyle.Render("recent") + "\n")
-	if len(s.Recent) == 0 {
-		b.WriteString("  " + faintStyle.Render("nothing yet") + "\n")
-	}
-	for i, e := range s.Recent {
-		if i >= 8 {
-			break
-		}
-		b.WriteString("  " + faintStyle.Render(e.Time.Local().Format("15:04")) + "  " +
-			midStyle.Render(padTo(e.Provider, 10)) + " " + outcomeStyle(e.Outcome) +
-			" " + faintStyle.Render(truncate(e.Detail, 34)) + "\n")
-	}
+	// Health legend.
+	b.WriteString("\n  " + okStyle.Render(healthGlyph) + dimStyle.Render(" resetting on time   ") +
+		warnStyle.Render(healthGlyph) + dimStyle.Render(" missed a reset") + "\n")
 
 	if m.flash != "" {
 		b.WriteString("\n  " + warnStyle.Render(m.flash) + "\n")
@@ -315,16 +313,43 @@ func (m Model) View() string {
 	return b.String()
 }
 
-func outcomeStyle(o model.Outcome) string {
-	switch o {
-	case model.Manual:
-		return accentStyle.Render(string(o))
-	case model.Fired:
-		return dimStyle.Render(string(o))
-	case model.Skipped:
-		return faintStyle.Render(string(o))
+// health is a provider's reset-health at a glance.
+type health int
+
+const (
+	healthUnknown health = iota
+	healthOK
+	healthBad
+)
+
+// providerHealth reports whether a provider's most recent *scheduled* reset was
+// served — i.e. a window was active around the reset boundary. events are
+// newest-first (store.Recent orders ts DESC). Manual fires (Reset == "") are
+// ignored: they say nothing about scheduled resets.
+func providerHealth(name string, events []model.Event) health {
+	for _, e := range events {
+		if e.Provider != name || e.Reset == "" {
+			continue
+		}
+		switch e.Outcome {
+		case model.Fired, model.Skipped:
+			return healthOK
+		case model.Failed, model.Missed:
+			return healthBad
+		}
+		return healthUnknown
+	}
+	return healthUnknown
+}
+
+func healthStyle(h health) lipgloss.Style {
+	switch h {
+	case healthOK:
+		return okStyle
+	case healthBad:
+		return warnStyle
 	default:
-		return warnStyle.Render(string(o))
+		return faintStyle
 	}
 }
 
@@ -338,11 +363,4 @@ func short(d time.Duration) string {
 		return fmt.Sprintf("%dh%02dm", h, m)
 	}
 	return fmt.Sprintf("%dm", m)
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n-1] + "…"
 }
