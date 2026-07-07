@@ -1,146 +1,100 @@
 # Curfew
 
-**Align your AI usage-window resets to convenient times.**
+Anchors your AI usage windows so they reset when you want them to.
 
-Claude (and similar tools) meter usage in a rolling window — for Claude, 5 hours
-that starts on your *first* message. Because the *number* of windows is
-unbounded, you can "anchor" a fresh window by firing a throwaway prompt at a
-strategic time. Curfew does this automatically so your windows reset on
-convenient boundaries — you get maximum usable capacity during focused work and
-push the dead time to hours you don't code.
-
-You tell Curfew **when you want fresh capacity** (reset boundaries); it
-back-computes the anchor times, fires them state-aware (never double-firing when
-a window is already open), and shows everything in a TUI dashboard.
-
-```
-⏰ Curfew   pid 2474558 · Local · Mon 00:22:41
-
-  PROVIDER   STATE      WINDOW                 NEXT ANCHOR
-  claude-1   idle       —                      Mon 05:00 → reset 10:00
-  claude-2   idle       —                      Mon 07:30 → reset 12:30
-▸ codex      ACTIVE     23:54→04:54 (4h left)  Mon 08:00 → reset 13:00
-
-  RECENT
-  07-06 00:14  codex      fired
-  07-05 20:00  claude-1   skipped   window already active since 19:02
-
-  ↑/↓ select · f fire now · r refresh · q quit
-```
+Claude's usage limit runs on a rolling 5-hour window that starts with your first
+message. Curfew sends a throwaway prompt at a set time to start that window
+early, so it resets on a schedule you choose instead of whenever you happened to
+start working. Works with Claude, Codex, or any CLI.
 
 ## How it works
 
-- **Reset → anchor:** a window that should reset at `R` must start at
-  `R − window_length`. For a 10:00 reset with Claude's 5h window, Curfew fires an
-  anchor at 05:00.
-- **State-aware:** at each anchor time Curfew reads the provider's local session
-  logs. If a window is already active, it skips — anchoring would be redundant.
-- **Reliable:** a per-user background service (systemd `--user` on Linux,
-  LaunchAgent on macOS, Task Scheduler on Windows) runs an internal cron
-  scheduler, so timing is identical on every OS. It runs in your **user session**
-  so the anchor commands can reach your credentials.
-- **Verify + retry:** after firing, Curfew confirms a fresh window appeared in
-  the logs and retries with backoff on failure.
-- **Asleep at anchor time?** Curfew records the miss (visible in the TUI) rather
-  than waking the machine.
+You tell a provider when you want a fresh window (its reset times). Curfew fires
+the anchor `window_length` earlier, so a 10:00 reset means a 05:00 anchor for
+Claude's 5h window; chain them for resets at 10:00 / 15:00 / 20:00.
+
+- **State-aware.** Before firing it reads the provider's local session logs and
+  skips if a window is already open.
+- **Verified.** The anchor runs your command, confirms a new window appeared,
+  and retries with backoff on failure.
+- **Background service.** A per-user service (systemd `--user`, launchd, or Task
+  Scheduler) runs the schedule. If the machine is asleep at anchor time the miss
+  is recorded, not retried.
 
 ## Install
 
-Requires Go 1.24+ to build from source.
+Needs Go 1.26+.
 
 ```sh
-go build -o ~/.local/bin/curfew ./cmd/curfew   # or: ./scripts/build.sh for all platforms
-curfew install                                  # install & start the background service
+go build -o ~/.local/bin/curfew ./cmd/curfew   # or scripts/build.sh for all platforms
+curfew install                                 # install and start the service
 curfew                                          # open the TUI
+```
+
+## TUI
+
+`curfew` opens a dashboard. Navigation is arrow keys, Enter, and Esc.
+
+- Dashboard: each provider's state and next reset, plus `+ add provider` (name it,
+  then type the command to run).
+- Provider view: fire now, edit the command, add/remove reset times (with their
+  computed anchors shown), toggle weekdays, remove the provider.
+
+## Config
+
+`~/.config/curfew/config.toml`, written on first run and hot-reloaded on change.
+
+```toml
+[general]
+timezone = "local"
+
+[[provider]]
+name    = "claude-1"
+command = "claude -p 'curfew: anchor' --model haiku"
+window_minutes = 300
+log_glob = "~/.claude/projects/**/*.jsonl"   # optional, enables state detection
+
+[[schedule]]
+provider  = "claude-1"
+resets_at = ["10:00", "15:00", "20:00"]
+days      = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+```
+
+`command` is a shell command line: whatever you'd type in a terminal, env
+prefixes and pipes included.
+
+**Two subscriptions.** Give each Claude provider its own config dir with
+`CLAUDE_CONFIG_DIR` (it holds that account's credentials and logs). Log into each
+once, then set the variable in the provider's command or its `[provider.env]`
+table:
+
+```sh
+CLAUDE_CONFIG_DIR=~/.claude    claude   # subscription 1
+CLAUDE_CONFIG_DIR=~/.claude-2  claude   # subscription 2
 ```
 
 ## Commands
 
-| Command | Purpose |
-|---|---|
-| `curfew` | launch the TUI dashboard |
-| `curfew status` | one-shot status of providers + recent history |
-| `curfew state` | show each provider's currently-detected window (troubleshooting) |
-| `curfew list` | show configured providers and schedules |
-| `curfew fire <provider>` | anchor a window now |
-| `curfew install` / `uninstall` | manage the background service |
-| `curfew start` / `stop` | control the installed service |
-| `curfew validate` / `path` / `init` | config helpers |
-
-## Configuration
-
-Config lives at your OS config dir (`~/.config/curfew/config.toml` on Linux).
-A default is written on first run.
-
-```toml
-[general]
-timezone = "local"          # or an IANA name, e.g. "America/New_York"
-
-[[provider]]
-name    = "claude-1"
-command = "claude -p 'curfew: anchor' --model haiku"   # any shell command
-window_minutes = 300
-log_glob = "~/.claude/projects/**/*.jsonl"             # optional: state detection
-timestamp_field = "timestamp"
-[provider.env]
-CLAUDE_CONFIG_DIR = "~/.claude"                        # optional: extra env
-
-[[schedule]]
-provider  = "claude-1"
-resets_at = ["10:00", "15:00", "20:00"]   # when you want fresh capacity
-days      = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+```
+curfew                     open the TUI
+curfew status              provider state and recent history
+curfew state               window detected from logs (for troubleshooting)
+curfew fire <provider>     anchor now
+curfew list                print the config
+curfew install|uninstall   manage the service
+curfew start|stop          control the service
 ```
 
-Edits are hot-reloaded — no restart needed.
-
-### Editing from the TUI
-
-Everything above is editable in the TUI without touching the file, using only
-arrow keys / Enter / Esc:
-
-- **Dashboard** — `↑/↓` select a provider, `Enter` open it, or select
-  `+ add provider` to create one: give it a name, then type the **command** to
-  anchor it (exactly what you'd type in a terminal, e.g.
-  `CLAUDE_CONFIG_DIR=~/.claude-2 claude -p 'curfew: anchor'`).
-- **Provider editor** — a navigable list: `fire now` · reset times (each showing
-  its computed anchor) · `+ add reset time` · a `days` row (`←/→` + `Enter` to
-  toggle) · `× remove provider`. Adding an evening reset offers to auto-fill the
-  earlier chained resets.
-
-### Two Claude subscriptions (claude-1 / claude-2)
-
-Curfew separates two Claude subscriptions by pointing each provider at a
-different Claude config directory via `CLAUDE_CONFIG_DIR`. That directory holds
-both the logged-in credentials and the session logs, so each provider anchors
-and observes an independent subscription. Log in to each once:
-
-```sh
-CLAUDE_CONFIG_DIR=~/.claude    claude   # /login  -> subscription 1  (claude-1)
-CLAUDE_CONFIG_DIR=~/.claude-2  claude   # /login  -> subscription 2  (claude-2)
-```
-
-Codex is separated the same way via `CODEX_HOME` (or just put the env in the
-command). Any CLI works — a provider is just a `command` string (run through your
-shell) plus a `window_minutes`, and optionally a `log_glob`/`timestamp_field` for
-state detection. Providers without a `log_glob` still anchor; they just always
-fire on schedule (no active-window skipping).
-
-## Architecture
-
-One Go binary, two roles selected by subcommand:
-
-- `curfew daemon` — the scheduler + a localhost JSON API, run by the service.
-- everything else — a client of that API (the TUI and CLI verbs).
+## Layout
 
 ```
-internal/
-  config/    TOML config, provider presets, validation
-  state/     reconstruct the current window from session logs
-  schedule/  reset times -> anchor cron entries (DST-aware)
-  trigger/   execute anchor command + verify + retry
-  store/     SQLite history of outcomes
-  daemon/    cron loop + state-aware fire decision + localhost API
-  api/       endpoint discovery + HTTP client
-  service/   install/manage the per-user OS service
-  tui/       Bubble Tea dashboard
+cmd/curfew         entry point
+internal/config    config and presets
+internal/state     window detection from logs
+internal/schedule  reset -> anchor (cron, DST-aware)
+internal/trigger   run command + verify + retry
+internal/store     SQLite history
+internal/daemon    scheduler + localhost API
+internal/tui       Bubble Tea UI
+internal/service   install and manage the OS service
 ```
