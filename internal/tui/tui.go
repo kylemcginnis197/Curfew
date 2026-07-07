@@ -138,12 +138,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateConfirmRemove(msg)
 		case modeConfirmRemoveProvider:
 			return m.updateConfirmRemoveProvider(msg)
-		case modeAddType:
-			return m.updateAddType(msg)
 		case modeAddName:
 			return m.updateAddName(msg)
-		case modeAddDir:
-			return m.updateAddDir(msg)
+		case modeAddCommand:
+			return m.updateAddCommand(msg)
 		case modeEdit:
 			return m.updateEdit(msg)
 		default:
@@ -229,7 +227,7 @@ const rowWidth = 46
 
 func (m Model) View() string {
 	switch m.mode {
-	case modeAddType, modeAddName, modeAddDir:
+	case modeAddName, modeAddCommand:
 		return m.viewAddProvider()
 	case modeEdit, modeInput, modeConfirmChain, modeConfirmRemove, modeConfirmRemoveProvider:
 		return m.viewEdit()

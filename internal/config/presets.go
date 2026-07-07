@@ -19,7 +19,7 @@ package config
 func NewClaudeProvider(name, configDir string) Provider {
 	return Provider{
 		Name:          name,
-		Command:       []string{"claude", "-p", "curfew: anchor", "--model", "haiku"},
+		Command:       "claude -p 'curfew: anchor' --model haiku",
 		Env:           map[string]string{"CLAUDE_CONFIG_DIR": configDir},
 		WindowMinutes: 300, // Claude's 5-hour rolling window
 		LogGlob:       configDir + "/projects/**/*.jsonl",
@@ -32,7 +32,7 @@ func NewClaudeProvider(name, configDir string) Provider {
 func NewCodexProvider(name, home string) Provider {
 	return Provider{
 		Name:           name,
-		Command:        []string{"codex", "exec", "curfew: anchor"},
+		Command:        "codex exec 'curfew: anchor'",
 		Env:            map[string]string{"CODEX_HOME": home},
 		WindowMinutes:  300,
 		LogGlob:        home + "/sessions/**/*.jsonl",

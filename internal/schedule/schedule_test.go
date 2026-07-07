@@ -11,7 +11,7 @@ import (
 func TestAnchorSameDay(t *testing.T) {
 	// reset 10:00, 300m window -> anchor 05:00 same day.
 	c := &config.Config{
-		Providers: []config.Provider{{Name: "claude-1", Command: []string{"x"}, WindowMinutes: 300}},
+		Providers: []config.Provider{{Name: "claude-1", Command: "x", WindowMinutes: 300}},
 		Schedules: []config.Schedule{{Provider: "claude-1", ResetsAt: []string{"10:00"}, Days: []string{"Mon"}}},
 	}
 	got, err := Compile(c)
@@ -33,7 +33,7 @@ func TestAnchorSameDay(t *testing.T) {
 func TestAnchorCrossesMidnight(t *testing.T) {
 	// reset 02:00 Mon, 300m window -> anchor 21:00 Sun (prev day).
 	c := &config.Config{
-		Providers: []config.Provider{{Name: "p", Command: []string{"x"}, WindowMinutes: 300}},
+		Providers: []config.Provider{{Name: "p", Command: "x", WindowMinutes: 300}},
 		Schedules: []config.Schedule{{Provider: "p", ResetsAt: []string{"02:00"}, Days: []string{"Mon"}}},
 	}
 	got, _ := Compile(c)
@@ -52,7 +52,7 @@ func TestAnchorCrossesMidnight(t *testing.T) {
 func TestAnchorHalfHour(t *testing.T) {
 	// reset 12:30, 300m -> 07:30.
 	c := &config.Config{
-		Providers: []config.Provider{{Name: "p", Command: []string{"x"}, WindowMinutes: 300}},
+		Providers: []config.Provider{{Name: "p", Command: "x", WindowMinutes: 300}},
 		Schedules: []config.Schedule{{Provider: "p", ResetsAt: []string{"12:30"}}},
 	}
 	got, _ := Compile(c)

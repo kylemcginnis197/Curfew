@@ -261,7 +261,7 @@ func cmdList() error {
 	fmt.Printf("config: %s\ntimezone: %s\n\n", path, c.General.Timezone)
 	fmt.Println("Providers:")
 	for _, p := range c.Providers {
-		fmt.Printf("  %-10s window=%dm  cmd=%s\n", p.Name, p.WindowMinutes, strings.Join(p.Command, " "))
+		fmt.Printf("  %-10s window=%dm  cmd=%s\n", p.Name, p.WindowMinutes, p.Command)
 	}
 	fmt.Println("\nSchedules:")
 	for _, s := range c.Schedules {

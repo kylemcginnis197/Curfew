@@ -16,7 +16,7 @@ type stubReader struct{ w state.Window }
 func (s stubReader) Current(time.Time) (state.Window, error) { return s.w, nil }
 
 func echoProvider() config.Provider {
-	return config.Provider{Name: "t", Command: []string{"echo", "hi"}}
+	return config.Provider{Name: "t", Command: "echo hi"}
 }
 
 func TestSkipWhenActive(t *testing.T) {
@@ -78,7 +78,7 @@ func TestFireVerified(t *testing.T) {
 
 func TestFireFailure(t *testing.T) {
 	tr := &Trigger{
-		Provider: config.Provider{Name: "bad", Command: []string{"this-binary-does-not-exist-xyz"}},
+		Provider: config.Provider{Name: "bad", Command: "this-binary-does-not-exist-xyz"},
 		Reader:   stubReader{},
 		Backoff:  nil, // single attempt, no waiting
 		Now:      time.Now,
@@ -91,7 +91,7 @@ func TestFireFailure(t *testing.T) {
 
 func TestEnvExpansion(t *testing.T) {
 	tr := &Trigger{Provider: config.Provider{
-		Name: "e", Command: []string{"true"},
+		Name: "e", Command: "true",
 		Env: map[string]string{"CLAUDE_CONFIG_DIR": "~/.claude-2"},
 	}}
 	env := tr.env()

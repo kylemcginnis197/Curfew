@@ -9,8 +9,8 @@ import (
 func cfgWithProviders() *config.Config {
 	return &config.Config{
 		Providers: []config.Provider{
-			config.NewClaudeProvider("claude-1", "~/.claude"),
-			config.NewCodexProvider("codex", "~/.codex"),
+			{Name: "claude-1", Command: "claude -p 'x'", WindowMinutes: 300},
+			{Name: "codex", Command: "codex exec 'x'", WindowMinutes: 300},
 		},
 		Schedules: []config.Schedule{
 			{Provider: "claude-1", ResetsAt: []string{"10:00"}, Days: []string{"Mon"}},
@@ -19,50 +19,36 @@ func cfgWithProviders() *config.Config {
 	}
 }
 
-func TestAddProviderClaude(t *testing.T) {
+func TestAddProvider(t *testing.T) {
 	c := cfgWithProviders()
-	if err := addProvider(c, "claude", "claude-2", "~/.claude-personal"); err != nil {
+	if err := addProvider(c, "claude-2", "  claude -p 'hi' --model haiku  "); err != nil {
 		t.Fatal(err)
 	}
 	p, ok := c.Provider("claude-2")
 	if !ok {
 		t.Fatal("claude-2 not added")
 	}
-	if p.Env["CLAUDE_CONFIG_DIR"] != "~/.claude-personal" {
-		t.Errorf("config dir = %q", p.Env["CLAUDE_CONFIG_DIR"])
+	if p.Command != "claude -p 'hi' --model haiku" {
+		t.Errorf("command = %q (should be trimmed)", p.Command)
 	}
-	if p.LogGlob != "~/.claude-personal/projects/**/*.jsonl" {
-		t.Errorf("log_glob = %q", p.LogGlob)
-	}
-	if p.Command[0] != "claude" {
-		t.Errorf("command = %v", p.Command)
+	if p.WindowMinutes != 300 {
+		t.Errorf("window = %d, want 300", p.WindowMinutes)
 	}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("config invalid after add: %v", err)
 	}
 }
 
-func TestAddProviderCodexDefaultsDir(t *testing.T) {
-	c := cfgWithProviders()
-	if err := addProvider(c, "codex", "codex-2", ""); err != nil {
-		t.Fatal(err)
-	}
-	p, _ := c.Provider("codex-2")
-	if p.Env["CODEX_HOME"] != "~/.codex-2" {
-		t.Errorf("empty dir should default to ~/.codex-2, got %q", p.Env["CODEX_HOME"])
-	}
-	if p.LogGlob != "~/.codex-2/sessions/**/*.jsonl" {
-		t.Errorf("log_glob = %q", p.LogGlob)
-	}
-}
-
 func TestAddProviderErrors(t *testing.T) {
 	c := cfgWithProviders()
-	if err := addProvider(c, "claude", "", "~/x"); err == nil {
+	if err := addProvider(c, "", "claude -p x"); err == nil {
 		t.Error("empty name should error")
 	}
-	if err := addProvider(c, "claude", "claude-1", "~/x"); err == nil {
+	if err := addProvider(c, "claude-1", "claude -p x"); err == nil {
 		t.Error("duplicate name should error")
+	}
+	if err := addProvider(c, "new", "   "); err == nil {
+		t.Error("empty command should error")
 	}
 }
 
@@ -72,7 +58,6 @@ func TestRemoveProvider(t *testing.T) {
 	if _, ok := c.Provider("codex"); ok {
 		t.Fatal("codex provider not removed")
 	}
-	// Its schedule must be gone too, or the config won't validate.
 	for _, s := range c.Schedules {
 		if s.Provider == "codex" {
 			t.Fatal("codex schedule not removed")
@@ -91,11 +76,5 @@ func TestRemoveProviderKeepsOthers(t *testing.T) {
 	}
 	if len(c.Providers) != 1 {
 		t.Fatalf("expected 1 provider, got %d", len(c.Providers))
-	}
-}
-
-func TestDefaultDirFor(t *testing.T) {
-	if got := defaultDirFor("claude-3"); got != "~/.claude-3" {
-		t.Errorf("defaultDirFor = %q", got)
 	}
 }

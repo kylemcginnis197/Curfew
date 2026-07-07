@@ -11,7 +11,7 @@ import (
 func TestDayEnabledEveryDay(t *testing.T) {
 	// Empty Days means "every day": all weekdays should read as enabled.
 	c := &config.Config{
-		Providers: []config.Provider{{Name: "p", Command: []string{"x"}, WindowMinutes: 300}},
+		Providers: []config.Provider{{Name: "p", Command: "x", WindowMinutes: 300}},
 		Schedules: []config.Schedule{{Provider: "p", ResetsAt: []string{"10:00"}}}, // no Days
 	}
 	for _, d := range weekdayOrder {
@@ -27,7 +27,7 @@ func TestDayEnabledEveryDay(t *testing.T) {
 
 func TestToggleDayFromEveryDayTurnsOneOff(t *testing.T) {
 	c := &config.Config{
-		Providers: []config.Provider{{Name: "p", Command: []string{"x"}, WindowMinutes: 300}},
+		Providers: []config.Provider{{Name: "p", Command: "x", WindowMinutes: 300}},
 		Schedules: []config.Schedule{{Provider: "p", ResetsAt: []string{"10:00"}}}, // every day
 	}
 	if err := toggleDay(c, "p", time.Sunday); err != nil {
@@ -44,7 +44,7 @@ func TestToggleDayFromEveryDayTurnsOneOff(t *testing.T) {
 }
 
 func TestToggleDayNoSchedule(t *testing.T) {
-	c := &config.Config{Providers: []config.Provider{{Name: "p", Command: []string{"x"}, WindowMinutes: 300}}}
+	c := &config.Config{Providers: []config.Provider{{Name: "p", Command: "x", WindowMinutes: 300}}}
 	if err := toggleDay(c, "p", time.Monday); err == nil {
 		t.Fatal("toggleDay with no schedule should error (add a reset first)")
 	}
@@ -60,7 +60,7 @@ func TestProviderHelpersNilSafe(t *testing.T) {
 }
 
 func TestAddResetDefaultDays(t *testing.T) {
-	c := &config.Config{Providers: []config.Provider{{Name: "codex", Command: []string{"x"}, WindowMinutes: 300}}}
+	c := &config.Config{Providers: []config.Provider{{Name: "codex", Command: "x", WindowMinutes: 300}}}
 	addReset(c, "codex", "13:00")
 	i := providerScheduleIdx(c, "codex")
 	if i < 0 {

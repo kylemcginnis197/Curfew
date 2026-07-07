@@ -52,7 +52,7 @@ func echoCfg(resets ...string) *config.Config {
 	}
 	return &config.Config{
 		General:   config.General{Timezone: "local"},
-		Providers: []config.Provider{{Name: "p", Command: []string{"echo", "anchor"}, WindowMinutes: 300}},
+		Providers: []config.Provider{{Name: "p", Command: "echo anchor", WindowMinutes: 300}},
 		Schedules: []config.Schedule{{Provider: "p", ResetsAt: resets}},
 	}
 }

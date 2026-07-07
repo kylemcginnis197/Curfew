@@ -8,23 +8,10 @@ import (
 	"github.com/kyle/curfew/internal/config"
 )
 
-// providerKinds are the provider types the TUI can create.
-var providerKinds = []string{"claude", "codex"}
-
-// defaultDirFor suggests a config/home directory for a new provider.
-func defaultDirFor(name string) string { return "~/." + name }
-
-// makeProvider builds a provider of the given kind bound to dir.
-func makeProvider(kind, name, dir string) config.Provider {
-	if kind == "codex" {
-		return config.NewCodexProvider(name, dir)
-	}
-	return config.NewClaudeProvider(name, dir)
-}
-
-// addProvider appends a new provider (deduped by name). It errors on an empty or
-// duplicate name; an empty dir falls back to the default for the name.
-func addProvider(cfg *config.Config, kind, name, dir string) error {
+// addProvider appends a new provider defined by a name and a shell command
+// (what you'd type in a terminal to anchor a window). It errors on an empty or
+// duplicate name, or an empty command.
+func addProvider(cfg *config.Config, name, command string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return fmt.Errorf("name required")
@@ -32,10 +19,14 @@ func addProvider(cfg *config.Config, kind, name, dir string) error {
 	if _, ok := cfg.Provider(name); ok {
 		return fmt.Errorf("provider %q already exists", name)
 	}
-	if strings.TrimSpace(dir) == "" {
-		dir = defaultDirFor(name)
+	if strings.TrimSpace(command) == "" {
+		return fmt.Errorf("command required")
 	}
-	cfg.Providers = append(cfg.Providers, makeProvider(kind, name, strings.TrimSpace(dir)))
+	cfg.Providers = append(cfg.Providers, config.Provider{
+		Name:          name,
+		Command:       strings.TrimSpace(command),
+		WindowMinutes: 300,
+	})
 	return nil
 }
 
@@ -57,38 +48,25 @@ func removeProvider(cfg *config.Config, name string) {
 	cfg.Schedules = keptS
 }
 
-// --- add-provider flow (dashboard "＋ Add provider") ---
+// --- add-provider flow (dashboard "+ add provider"): name -> command ---
 
-// startAddProvider reloads config and enters the type-picker.
+// startAddProvider reloads config and prompts for the new provider's name.
 func (m Model) startAddProvider() Model {
 	if path, err := config.ConfigPath(); err == nil {
 		if cfg, err := config.Load(path); err == nil {
 			m.cfg, m.cfgPath = cfg, path
 		}
 	}
-	m.mode = modeAddType
-	m.addTypeSel = 0
+	m.mode = modeAddName
+	m.addName = ""
+	m.input.SetValue("")
+	m.input.Prompt = "name: "
+	m.input.Placeholder = "claude-3"
+	m.input.Width = 24
+	m.input.CharLimit = 40
+	m.input.Focus()
 	m.flash = ""
 	return m
-}
-
-func (m Model) updateAddType(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "up", "down":
-		m.addTypeSel = (m.addTypeSel + 1) % len(providerKinds)
-	case "enter":
-		m.addKind = providerKinds[m.addTypeSel]
-		m.mode = modeAddName
-		m.input.SetValue("")
-		m.input.Prompt = "name: "
-		m.input.Placeholder = m.addKind + "-2"
-		m.input.Width = 24
-		m.input.CharLimit = 40
-		m.input.Focus()
-	case "esc":
-		m.mode = modeDashboard
-	}
-	return m, nil
 }
 
 func (m Model) updateAddName(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -107,11 +85,11 @@ func (m Model) updateAddName(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.addName = name
-		m.mode = modeAddDir
-		m.input.Prompt = "config dir: "
-		m.input.Width = 40 // paths can be long (e.g. ~/.claude-personal)
-		m.input.CharLimit = 128
-		m.input.SetValue(defaultDirFor(name))
+		m.mode = modeAddCommand
+		m.input.Prompt = "command: "
+		m.input.Width = 48
+		m.input.CharLimit = 256
+		m.input.SetValue("claude -p 'curfew: anchor'")
 		m.input.CursorEnd()
 		return m, nil
 	}
@@ -120,19 +98,17 @@ func (m Model) updateAddName(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) updateAddDir(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateAddCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.mode = modeDashboard
 		return m, nil
 	case "enter":
-		dir := strings.TrimSpace(m.input.Value())
-		if err := addProvider(m.cfg, m.addKind, m.addName, dir); err != nil {
+		if err := addProvider(m.cfg, m.addName, m.input.Value()); err != nil {
 			m.flash = err.Error()
 			return m, nil
 		}
 		m.input.Prompt = "add reset time: " // restore for the schedule editor
-		// Save and open the new provider's editor so the user can add resets.
 		if err := m.cfg.Save(m.cfgPath); err != nil {
 			m.flash = "save failed: " + err.Error()
 			if cfg, err := config.Load(m.cfgPath); err == nil {
@@ -141,6 +117,7 @@ func (m Model) updateAddDir(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = modeDashboard
 			return m, nil
 		}
+		// Open the new provider's editor so the user can add reset times.
 		return m.enterEdit(m.addName), fetch()
 	}
 	var cmd tea.Cmd
@@ -173,27 +150,18 @@ func (m Model) updateConfirmRemoveProvider(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 	return m, nil
 }
 
-// viewAddProvider renders the add-provider screens.
+// viewAddProvider renders the two add-provider steps.
 func (m Model) viewAddProvider() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("CURFEW") + dimStyle.Render(" · add provider") + "\n\n")
 	switch m.mode {
-	case modeAddType:
-		b.WriteString("  " + dimStyle.Render("provider type") + "\n")
-		for i, k := range providerKinds {
-			b.WriteString("  " + chainOpt(i == m.addTypeSel, k) + "\n")
-		}
-		b.WriteString(faintStyle.Render("\n  ↑/↓ choose · enter next · esc cancel"))
 	case modeAddName:
-		b.WriteString("  " + dimStyle.Render("type "+m.addKind) + "\n\n  " + m.input.View() + "\n")
+		b.WriteString("  " + dimStyle.Render("provider name") + "\n\n  " + m.input.View() + "\n")
 		b.WriteString(faintStyle.Render("  enter next · esc cancel"))
-	case modeAddDir:
-		b.WriteString("  " + dimStyle.Render(fmt.Sprintf("%s provider %q", m.addKind, m.addName)) + "\n\n  " + m.input.View() + "\n")
-		envKey := "CLAUDE_CONFIG_DIR"
-		if m.addKind == "codex" {
-			envKey = "CODEX_HOME"
-		}
-		b.WriteString(faintStyle.Render("  sets " + envKey + " + log location · enter create · esc cancel"))
+	case modeAddCommand:
+		b.WriteString("  " + dimStyle.Render(fmt.Sprintf("command to anchor %q (as you'd type it in a terminal)", m.addName)) +
+			"\n\n  " + m.input.View() + "\n")
+		b.WriteString(faintStyle.Render("  runs via your shell · enter create · esc cancel"))
 	}
 	if m.flash != "" {
 		b.WriteString("\n\n  " + warnStyle.Render(m.flash))

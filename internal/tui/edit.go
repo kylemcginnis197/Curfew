@@ -22,9 +22,8 @@ const (
 	modeConfirmChain
 	modeConfirmRemove
 	modeConfirmRemoveProvider
-	modeAddType
 	modeAddName
-	modeAddDir
+	modeAddCommand
 )
 
 // earliestAnchorMin is the earliest wall-clock minute-of-day an auto-chained

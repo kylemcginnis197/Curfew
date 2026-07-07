@@ -31,7 +31,7 @@ func TestAnchorForResetInvalid(t *testing.T) {
 func TestMultiDayWeekdayShift(t *testing.T) {
 	// 25h window, reset 00:00 Monday -> anchor 23:00 two days earlier = Saturday.
 	c := &config.Config{
-		Providers: []config.Provider{{Name: "p", Command: []string{"x"}, WindowMinutes: 25 * 60}},
+		Providers: []config.Provider{{Name: "p", Command: "x", WindowMinutes: 25 * 60}},
 		Schedules: []config.Schedule{{Provider: "p", ResetsAt: []string{"00:00"}, Days: []string{"Mon"}}},
 	}
 	got, err := Compile(c)

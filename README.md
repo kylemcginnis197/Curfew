@@ -78,12 +78,12 @@ timezone = "local"          # or an IANA name, e.g. "America/New_York"
 
 [[provider]]
 name    = "claude-1"
-command = ["claude", "-p", "curfew: anchor", "--model", "haiku"]
+command = "claude -p 'curfew: anchor' --model haiku"   # any shell command
 window_minutes = 300
-log_glob = "~/.claude/projects/**/*.jsonl"
+log_glob = "~/.claude/projects/**/*.jsonl"             # optional: state detection
 timestamp_field = "timestamp"
 [provider.env]
-CLAUDE_CONFIG_DIR = "~/.claude"
+CLAUDE_CONFIG_DIR = "~/.claude"                        # optional: extra env
 
 [[schedule]]
 provider  = "claude-1"
@@ -99,11 +99,12 @@ Everything above is editable in the TUI without touching the file, using only
 arrow keys / Enter / Esc:
 
 - **Dashboard** — `↑/↓` select a provider, `Enter` open it, or select
-  `＋ Add provider` to create one (pick `claude`/`codex`, name it, and set its
-  config directory — which is how you point it at a specific account/subscription).
-- **Provider editor** — a navigable list: `Fire now` · reset times (each showing
-  its computed anchor) · `＋ Add reset time` · a `Days:` row (`←/→` + `Enter` to
-  toggle) · `🗑 Remove provider`. Adding an evening reset offers to auto-fill the
+  `+ add provider` to create one: give it a name, then type the **command** to
+  anchor it (exactly what you'd type in a terminal, e.g.
+  `CLAUDE_CONFIG_DIR=~/.claude-2 claude -p 'curfew: anchor'`).
+- **Provider editor** — a navigable list: `fire now` · reset times (each showing
+  its computed anchor) · `+ add reset time` · a `days` row (`←/→` + `Enter` to
+  toggle) · `× remove provider`. Adding an evening reset offers to auto-fill the
   earlier chained resets.
 
 ### Two Claude subscriptions (claude-1 / claude-2)
@@ -118,10 +119,11 @@ CLAUDE_CONFIG_DIR=~/.claude    claude   # /login  -> subscription 1  (claude-1)
 CLAUDE_CONFIG_DIR=~/.claude-2  claude   # /login  -> subscription 2  (claude-2)
 ```
 
-Codex is separated the same way via `CODEX_HOME`. Any other CLI works too — add
-a `[[provider]]` with its `command`, `window_minutes`, and (optionally) a
-`log_glob`/`timestamp_field` for state detection. Providers without a `log_glob`
-still anchor; they just always fire on schedule (no active-window skipping).
+Codex is separated the same way via `CODEX_HOME` (or just put the env in the
+command). Any CLI works — a provider is just a `command` string (run through your
+shell) plus a `window_minutes`, and optionally a `log_glob`/`timestamp_field` for
+state detection. Providers without a `log_glob` still anchor; they just always
+fire on schedule (no active-window skipping).
 
 ## Architecture
 

@@ -62,7 +62,7 @@ func TestChainResets(t *testing.T) {
 
 func baseCfg() *config.Config {
 	return &config.Config{
-		Providers: []config.Provider{{Name: "claude-1", Command: []string{"x"}, WindowMinutes: 300}},
+		Providers: []config.Provider{{Name: "claude-1", Command: "x", WindowMinutes: 300}},
 		Schedules: []config.Schedule{{Provider: "claude-1", ResetsAt: []string{"15:00"}, Days: []string{"Mon", "Tue"}}},
 	}
 }
@@ -80,7 +80,7 @@ func TestAddResetDedupeSort(t *testing.T) {
 }
 
 func TestAddResetCreatesSchedule(t *testing.T) {
-	c := &config.Config{Providers: []config.Provider{{Name: "codex", Command: []string{"x"}, WindowMinutes: 300}}}
+	c := &config.Config{Providers: []config.Provider{{Name: "codex", Command: "x", WindowMinutes: 300}}}
 	addReset(c, "codex", "13:00")
 	if got := providerResets(c, "codex"); !reflect.DeepEqual(got, []string{"13:00"}) {
 		t.Fatalf("resets = %v, want [13:00]", got)

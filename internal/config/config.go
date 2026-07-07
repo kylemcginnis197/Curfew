@@ -33,9 +33,11 @@ type General struct {
 type Provider struct {
 	// Name is the unique key referenced by schedules (e.g. "claude").
 	Name string `toml:"name"`
-	// Command is the argv executed to anchor a fresh window. Kept minimal and
-	// pointed at the cheapest model to make each anchor as cheap as possible.
-	Command []string `toml:"command"`
+	// Command is a shell command line executed (via the platform shell) to anchor
+	// a fresh window — exactly what you'd type in a terminal, e.g.
+	//   claude -p 'curfew: anchor' --model haiku
+	// It may include quotes, environment prefixes, and pipes.
+	Command string `toml:"command"`
 	// Env sets extra environment variables for the anchor command. This is how
 	// multiple subscriptions of the same CLI are separated: e.g. two Claude
 	// providers each set CLAUDE_CONFIG_DIR to a different logged-in config dir.
@@ -108,7 +110,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("provider %q: duplicate name", p.Name)
 		}
 		seen[p.Name] = true
-		if len(p.Command) == 0 {
+		if strings.TrimSpace(p.Command) == "" {
 			return fmt.Errorf("provider %q: command is required", p.Name)
 		}
 		if p.WindowMinutes <= 0 {

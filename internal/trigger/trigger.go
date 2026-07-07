@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -103,13 +104,19 @@ func (t *Trigger) Fire(ctx context.Context, manual bool) model.Event {
 	return ev
 }
 
-// run executes the anchor command once, returning combined output.
+// run executes the anchor command once through the platform shell (so the
+// command string may contain quotes, env prefixes, and pipes), returning
+// combined output.
 func (t *Trigger) run(ctx context.Context) (string, error) {
-	cmd := t.Provider.Command
-	if len(cmd) == 0 {
+	cmdStr := strings.TrimSpace(t.Provider.Command)
+	if cmdStr == "" {
 		return "", fmt.Errorf("provider %s has no command", t.Provider.Name)
 	}
-	c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+	shell, flag := "sh", "-c"
+	if runtime.GOOS == "windows" {
+		shell, flag = "cmd", "/C"
+	}
+	c := exec.CommandContext(ctx, shell, flag, cmdStr)
 	c.Env = t.env()
 	out, err := c.CombinedOutput()
 	return string(out), err
