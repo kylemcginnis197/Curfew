@@ -104,9 +104,9 @@ func TestMultipleResetsAndProviders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Default: claude-1 (3 resets) + claude-2 (2) + codex (1) = 6 anchors.
-	if len(got) != 6 {
-		t.Fatalf("want 6 anchors, got %d", len(got))
+	// Default: claude (3 resets) + codex (1) = 4 anchors.
+	if len(got) != 4 {
+		t.Fatalf("want 4 anchors, got %d", len(got))
 	}
 }
 

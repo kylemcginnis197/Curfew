@@ -18,16 +18,16 @@ func TestDefaultRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if len(got.Providers) != 3 || got.Providers[0].Name != "claude-1" {
+	if len(got.Providers) != 2 || got.Providers[0].Name != "claude" {
 		t.Fatalf("providers not preserved: %+v", got.Providers)
 	}
 	if got.Providers[0].WindowMinutes != 300 {
 		t.Errorf("window_minutes = %d, want 300", got.Providers[0].WindowMinutes)
 	}
-	if got.Providers[0].Env["CLAUDE_CONFIG_DIR"] != "~/.claude" {
-		t.Errorf("env not preserved: %+v", got.Providers[0].Env)
+	if got.Providers[0].Command != "claude -p 'curfew: anchor' --model haiku" {
+		t.Errorf("command not preserved: %q", got.Providers[0].Command)
 	}
-	if len(got.Schedules) != 3 {
+	if len(got.Schedules) != 2 {
 		t.Fatalf("schedules not preserved: %+v", got.Schedules)
 	}
 }

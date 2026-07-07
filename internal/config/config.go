@@ -38,10 +38,9 @@ type Provider struct {
 	//   claude -p 'curfew: anchor' --model haiku
 	// It may include quotes, environment prefixes, and pipes.
 	Command string `toml:"command"`
-	// Env sets extra environment variables for the anchor command. This is how
-	// multiple subscriptions of the same CLI are separated: e.g. two Claude
-	// providers each set CLAUDE_CONFIG_DIR to a different logged-in config dir.
-	// Values may use ~ (expanded before exec).
+	// Env sets extra environment variables for the anchor command; values may
+	// use ~ (expanded before exec). Usually unnecessary, since the command runs
+	// through the shell and can set its own environment.
 	Env map[string]string `toml:"env"`
 	// WindowMinutes is the rolling-window length used to back-compute anchor
 	// times from reset times and to judge whether a window is currently active.

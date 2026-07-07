@@ -49,29 +49,20 @@ curfew                                          # open the TUI
 timezone = "local"
 
 [[provider]]
-name    = "claude-1"
+name    = "claude"
 command = "claude -p 'curfew: anchor' --model haiku"
 window_minutes = 300
 log_glob = "~/.claude/projects/**/*.jsonl"   # optional, enables state detection
 
 [[schedule]]
-provider  = "claude-1"
+provider  = "claude"
 resets_at = ["10:00", "15:00", "20:00"]
 days      = ["Mon", "Tue", "Wed", "Thu", "Fri"]
 ```
 
 `command` is a shell command line: whatever you'd type in a terminal, env
-prefixes and pipes included.
-
-**Two subscriptions.** Give each Claude provider its own config dir with
-`CLAUDE_CONFIG_DIR` (it holds that account's credentials and logs). Log into each
-once, then set the variable in the provider's command or its `[provider.env]`
-table:
-
-```sh
-CLAUDE_CONFIG_DIR=~/.claude    claude   # subscription 1
-CLAUDE_CONFIG_DIR=~/.claude-2  claude   # subscription 2
-```
+prefixes and pipes included. `claude` and `codex` ship as presets; add any other
+tool by giving it a name and a command.
 
 ## Commands
 

@@ -326,8 +326,8 @@ func TestReload(t *testing.T) {
 	d.mu.Lock()
 	n, cr := len(d.anchors), d.cron
 	d.mu.Unlock()
-	if n != 6 { // default: claude-1(3) + claude-2(2) + codex(1)
-		t.Errorf("anchors = %d, want 6", n)
+	if n != 4 { // default: claude(3) + codex(1)
+		t.Errorf("anchors = %d, want 4", n)
 	}
 	if cr == nil {
 		t.Fatal("cron engine not built")
