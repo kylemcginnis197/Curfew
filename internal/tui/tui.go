@@ -197,13 +197,20 @@ func (m Model) selected() string {
 // --- styles ---
 
 var (
-	titleStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
-	dimStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	activeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
-	idleStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	selStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("231")).Background(lipgloss.Color("238")).Bold(true)
-	warnStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-	headStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("111"))
+	// Minimal / monochrome palette: grayscale text with a single accent.
+	accentColor = lipgloss.Color("212") // the one accent (soft magenta)
+
+	titleStyle  = lipgloss.NewStyle().Bold(true).Foreground(accentColor)
+	accentStyle = lipgloss.NewStyle().Foreground(accentColor)
+	brightStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	midStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("247"))
+	dimStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	faintStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
+	activeStyle = accentStyle
+	idleStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	selStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("231")).Background(lipgloss.Color("236"))
+	warnStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("174")) // muted red
+	headStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
 )
 
 // padTo pads (or truncates) s to n display columns, counting runes so that
@@ -216,13 +223,9 @@ func padTo(s string, n int) string {
 	return s + strings.Repeat(" ", n-len(r))
 }
 
-// Dashboard column widths (display columns).
-const (
-	colName  = 10
-	colState = 8
-	colWin   = 26
-	rowWidth = 74
-)
+// rowWidth is the content width used for the header clock alignment and the
+// selection highlight bar.
+const rowWidth = 46
 
 func (m Model) View() string {
 	switch m.mode {
@@ -232,95 +235,96 @@ func (m Model) View() string {
 		return m.viewEdit()
 	}
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Curfew") + "  ")
 
 	if m.err != nil {
-		b.WriteString(warnStyle.Render("daemon not running"))
-		b.WriteString("\n\n")
-		b.WriteString(dimStyle.Render(m.err.Error()))
-		b.WriteString("\n\n")
-		b.WriteString("Press " + headStyle.Render("Enter") + " to install & start the background service, or run ")
-		b.WriteString(headStyle.Render("curfew install") + ".\n")
-		b.WriteString(dimStyle.Render("\nEnter install · Esc quit"))
+		b.WriteString(titleStyle.Render("CURFEW") + "\n\n")
+		b.WriteString("  " + warnStyle.Render("daemon not running") + "\n\n")
+		b.WriteString("  " + dimStyle.Render(m.err.Error()) + "\n\n")
+		b.WriteString("  press " + accentStyle.Render("enter") + dimStyle.Render(" to install & start the service") + "\n")
 		if m.flash != "" {
-			b.WriteString("\n\n" + warnStyle.Render(m.flash))
+			b.WriteString("\n  " + warnStyle.Render(m.flash) + "\n")
 		}
+		b.WriteString(faintStyle.Render("\n  enter install · esc quit"))
 		return b.String()
 	}
 
 	s := m.status
-	b.WriteString(dimStyle.Render(fmt.Sprintf("pid %d · %s · %s", s.PID, s.Timezone, s.Now.Format("Mon 15:04:05"))))
-	b.WriteString("\n\n")
 
-	// Providers table.
-	header := "  " + padTo("PROVIDER", colName) + " " + padTo("STATE", colState) + " " +
-		padTo("WINDOW", colWin) + " NEXT ANCHOR"
-	b.WriteString(headStyle.Render(header) + "\n")
+	// Header: wordmark left, clock right-aligned.
+	clock := s.Now.Local().Format("Mon 15:04")
+	gap := rowWidth - len("CURFEW") - len(clock)
+	if gap < 1 {
+		gap = 1
+	}
+	b.WriteString(titleStyle.Render("CURFEW") + strings.Repeat(" ", gap) + dimStyle.Render(clock) + "\n\n")
+
+	// Providers.
 	for i, p := range s.Providers {
-		stateTxt, winTxt := "idle", "—"
+		stateWord := "idle"
+		detail := ""
 		if p.Active {
-			stateTxt = "ACTIVE"
-			winTxt = fmt.Sprintf("%s→%s (%s left)",
-				p.WindowStart.Local().Format("15:04"), p.WindowEnd.Local().Format("15:04"),
-				short(time.Until(p.WindowEnd)))
+			stateWord = "active"
+		} else if !p.NextAnchor.IsZero() {
+			detail = "next " + p.NextAnchor.Local().Format("15:04")
 		}
-		nextTxt := "—"
-		if !p.NextAnchor.IsZero() {
-			nextTxt = fmt.Sprintf("%s → reset %s", p.NextAnchor.Local().Format("Mon 15:04"), p.NextReset.Local().Format("15:04"))
-		}
-
 		if i == m.sel {
-			plain := "▸ " + padTo(p.Name, colName) + " " + padTo(stateTxt, colState) + " " +
-				padTo(winTxt, colWin) + " " + nextTxt
+			plain := "  " + padTo(p.Name, 11) + padTo(stateWord, 8)
+			if p.Active {
+				plain += fmt.Sprintf("resets %s   %s left", p.WindowEnd.Local().Format("15:04"), short(time.Until(p.WindowEnd)))
+			} else {
+				plain += detail
+			}
 			b.WriteString(selStyle.Render(padTo(plain, rowWidth)) + "\n")
 			continue
 		}
-		stateCol := idleStyle.Render(padTo(stateTxt, colState))
-		winCol := dimStyle.Render(padTo(winTxt, colWin))
-		nextCol := dimStyle.Render(nextTxt)
+		name := brightStyle.Render(padTo(p.Name, 11))
+		var st, det string
 		if p.Active {
-			stateCol = activeStyle.Render(padTo(stateTxt, colState))
-			winCol = padTo(winTxt, colWin)
+			st = accentStyle.Render(padTo(stateWord, 8))
+			det = midStyle.Render("resets "+p.WindowEnd.Local().Format("15:04")) +
+				dimStyle.Render("   "+short(time.Until(p.WindowEnd))+" left")
+		} else {
+			st = dimStyle.Render(padTo(stateWord, 8))
+			det = dimStyle.Render(detail)
 		}
-		if !p.NextAnchor.IsZero() {
-			nextCol = nextTxt
-		}
-		b.WriteString("  " + padTo(p.Name, colName) + " " + stateCol + " " + winCol + " " + nextCol + "\n")
+		b.WriteString("  " + name + st + det + "\n")
 	}
-	// "Add provider" row.
+	// Add-provider row.
 	if m.sel == len(s.Providers) {
-		b.WriteString(selStyle.Render(padTo("▸ + Add provider", rowWidth)) + "\n")
+		b.WriteString(selStyle.Render(padTo("  + add provider", rowWidth)) + "\n")
 	} else {
-		b.WriteString(dimStyle.Render("  + Add provider") + "\n")
+		b.WriteString("  " + accentStyle.Render("+") + dimStyle.Render(" add provider") + "\n")
 	}
 
-	// Recent history.
-	b.WriteString("\n" + headStyle.Render("  RECENT") + "\n")
+	// Recent.
+	b.WriteString("\n  " + dimStyle.Render("recent") + "\n")
 	if len(s.Recent) == 0 {
-		b.WriteString(dimStyle.Render("  (no events yet)\n"))
+		b.WriteString("  " + faintStyle.Render("nothing yet") + "\n")
 	}
 	for i, e := range s.Recent {
 		if i >= 8 {
 			break
 		}
-		b.WriteString(fmt.Sprintf("  %s  %-10s %s %s\n",
-			dimStyle.Render(e.Time.Format("01-02 15:04")),
-			e.Provider, outcomeStyle(e.Outcome), dimStyle.Render(truncate(e.Detail, 48))))
+		b.WriteString("  " + faintStyle.Render(e.Time.Local().Format("15:04")) + "  " +
+			midStyle.Render(padTo(e.Provider, 10)) + " " + outcomeStyle(e.Outcome) +
+			" " + faintStyle.Render(truncate(e.Detail, 34)) + "\n")
 	}
 
 	if m.flash != "" {
-		b.WriteString("\n" + warnStyle.Render(m.flash) + "\n")
+		b.WriteString("\n  " + warnStyle.Render(m.flash) + "\n")
 	}
-	b.WriteString(dimStyle.Render("\n↑/↓ select · Enter open · Esc quit"))
+	b.WriteString(faintStyle.Render("\n  ↑/↓ select · enter open · esc quit"))
 	return b.String()
 }
 
 func outcomeStyle(o model.Outcome) string {
 	switch o {
-	case model.Fired, model.Manual:
-		return activeStyle.Render(string(o))
-	case model.Skipped:
+	case model.Manual:
+		return accentStyle.Render(string(o))
+	case model.Fired:
 		return dimStyle.Render(string(o))
+	case model.Skipped:
+		return faintStyle.Render(string(o))
 	default:
 		return warnStyle.Render(string(o))
 	}

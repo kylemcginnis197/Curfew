@@ -457,11 +457,11 @@ func minutesOfDay(hhmm string) (int, bool) {
 
 func (m Model) viewEdit() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Curfew") + dimStyle.Render(" · edit schedule · ") + m.editProvider + "\n\n")
+	b.WriteString(titleStyle.Render("CURFEW") + dimStyle.Render(" · edit · ") + brightStyle.Render(m.editProvider) + "\n\n")
 
 	if m.cfg == nil {
-		b.WriteString(warnStyle.Render("no config loaded") + "\n")
-		b.WriteString(dimStyle.Render("\nEsc back"))
+		b.WriteString("  " + warnStyle.Render("no config loaded") + "\n")
+		b.WriteString(faintStyle.Render("\n  esc back"))
 		return b.String()
 	}
 
@@ -469,21 +469,25 @@ func (m Model) viewEdit() string {
 	win := m.providerWindow()
 	resets := providerResets(m.cfg, m.editProvider)
 
-	// cursorLabel renders an item's leading label, highlighted when focused.
+	// item highlights a focused row as a subtle full-width bar.
 	item := func(idx int, label string) string {
 		if m.editSel == idx {
-			return selStyle.Render("▸ "+label)
+			return selStyle.Render(padTo("  "+label, 34))
 		}
 		return "  " + label
 	}
 
-	// Fire now.
-	b.WriteString(item(it.fireIdx, "Fire now") + dimStyle.Render("  (anchor this provider immediately)") + "\n\n")
+	// fire now
+	if m.editSel == it.fireIdx {
+		b.WriteString(item(it.fireIdx, "fire now") + "\n\n")
+	} else {
+		b.WriteString("  " + midStyle.Render("fire now") + faintStyle.Render("   anchor now") + "\n\n")
+	}
 
-	// Reset rows with computed anchors.
-	b.WriteString(headStyle.Render(fmt.Sprintf("  %-8s   %s", "RESET", "ANCHOR")) + "\n")
+	// reset → anchor rows
+	b.WriteString(dimStyle.Render(fmt.Sprintf("  %-8s   %s", "reset", "anchor")) + "\n")
 	if len(resets) == 0 {
-		b.WriteString(dimStyle.Render("  (none yet)\n"))
+		b.WriteString("  " + faintStyle.Render("none yet") + "\n")
 	}
 	for i, r := range resets {
 		anchor := "?"
@@ -493,56 +497,71 @@ func (m Model) viewEdit() string {
 				anchor += " (prev day)"
 			}
 		}
-		b.WriteString(item(it.firstReset+i, fmt.Sprintf("%-8s→  %s", r, anchor)) + "\n")
+		if m.editSel == it.firstReset+i {
+			b.WriteString(item(it.firstReset+i, fmt.Sprintf("%-8s→  %s", r, anchor)) + "\n")
+		} else {
+			b.WriteString("  " + brightStyle.Render(fmt.Sprintf("%-8s", r)) + dimStyle.Render("→  "+anchor) + "\n")
+		}
 	}
 
-	// Add + Days items.
-	b.WriteString("\n" + item(it.addIdx, "+ Add reset time") + "\n")
+	// add reset
+	b.WriteString("\n")
+	if m.editSel == it.addIdx {
+		b.WriteString(item(it.addIdx, "+ add reset time") + "\n")
+	} else {
+		b.WriteString("  " + accentStyle.Render("+") + dimStyle.Render(" add reset time") + "\n")
+	}
 
-	b.WriteString("\n" + item(it.daysIdx, "Days:") + "  ")
+	// days
+	b.WriteString("\n  ")
+	daysLbl := dimStyle
+	if m.editSel == it.daysIdx {
+		daysLbl = accentStyle
+	}
+	b.WriteString(daysLbl.Render("days") + "  ")
 	for i, d := range weekdayOrder {
 		tok := weekdayToken[d]
 		on := dayEnabled(m.cfg, m.editProvider, d)
-		var cell string
 		switch {
 		case m.editSel == it.daysIdx && i == m.daySel:
-			cell = selStyle.Render(" " + tok + " ")
+			b.WriteString(selStyle.Render(" "+tok+" ") + " ")
 		case on:
-			cell = activeStyle.Render(" " + tok + " ")
+			b.WriteString(accentStyle.Render(tok) + " ")
 		default:
-			cell = dimStyle.Render(" " + tok + " ")
+			b.WriteString(faintStyle.Render(tok) + " ")
 		}
-		b.WriteString(cell + " ")
 	}
-	b.WriteString("\n")
+	b.WriteString("\n\n")
 
-	// Remove-provider item.
-	b.WriteString("\n" + item(it.removeIdx, "× Remove provider") + "\n")
+	// remove provider
+	if m.editSel == it.removeIdx {
+		b.WriteString(item(it.removeIdx, "× remove provider") + "\n")
+	} else {
+		b.WriteString("  " + dimStyle.Render("× remove provider") + "\n")
+	}
 
 	// Mode-specific prompt + contextual footer.
 	switch m.mode {
 	case modeInput:
 		b.WriteString("\n  " + m.input.View() + "\n")
-		b.WriteString(dimStyle.Render("  Enter confirm · Esc cancel"))
+		b.WriteString(faintStyle.Render("  enter confirm · esc cancel"))
 	case modeConfirmChain:
-		b.WriteString("\n  " + warnStyle.Render("Also add the earlier chained resets?") + "\n")
-		optAll := fmt.Sprintf("Add all: %s", strings.Join(m.pendingChain, ", "))
-		optOne := "Just " + m.pendingReset
-		b.WriteString("  " + chainOpt(m.chainSel == 0, optAll) + "\n")
-		b.WriteString("  " + chainOpt(m.chainSel == 1, optOne) + "\n")
-		b.WriteString(dimStyle.Render("  ↑/↓ choose · Enter confirm · Esc cancel"))
+		b.WriteString("\n  " + midStyle.Render("also add the earlier chained resets?") + "\n")
+		b.WriteString("  " + chainOpt(m.chainSel == 0, "add all: "+strings.Join(m.pendingChain, ", ")) + "\n")
+		b.WriteString("  " + chainOpt(m.chainSel == 1, "just "+m.pendingReset) + "\n")
+		b.WriteString(faintStyle.Render("  ↑/↓ choose · enter confirm · esc cancel"))
 	case modeConfirmRemove:
-		b.WriteString("\n  " + warnStyle.Render("Remove reset "+m.pendingReset+"?") + "\n")
-		b.WriteString(dimStyle.Render("  Enter remove · Esc cancel"))
+		b.WriteString("\n  " + warnStyle.Render("remove reset "+m.pendingReset+"?") + "\n")
+		b.WriteString(faintStyle.Render("  enter remove · esc cancel"))
 	case modeConfirmRemoveProvider:
-		b.WriteString("\n  " + warnStyle.Render("Remove provider "+m.editProvider+" and its schedule?") + "\n")
-		b.WriteString(dimStyle.Render("  Enter remove · Esc cancel"))
+		b.WriteString("\n  " + warnStyle.Render("remove provider "+m.editProvider+"?") + "\n")
+		b.WriteString(faintStyle.Render("  enter remove · esc cancel"))
 	default:
-		hint := "↑/↓ move · Enter select · Esc back"
+		hint := "↑/↓ move · enter select · esc back"
 		if m.editSel == it.daysIdx {
-			hint = "↑/↓ move · ←/→ pick day · Enter toggle · Esc back"
+			hint = "↑/↓ move · ←/→ pick day · enter toggle · esc back"
 		}
-		b.WriteString(dimStyle.Render("\n  " + hint))
+		b.WriteString(faintStyle.Render("\n  " + hint))
 	}
 
 	if m.flash != "" {
@@ -554,7 +573,7 @@ func (m Model) viewEdit() string {
 // chainOpt renders one selectable option in the chain prompt.
 func chainOpt(selected bool, label string) string {
 	if selected {
-		return selStyle.Render("▸ " + label)
+		return selStyle.Render(padTo(label, 40))
 	}
-	return "  " + label
+	return dimStyle.Render(label)
 }

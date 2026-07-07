@@ -176,24 +176,24 @@ func (m Model) updateConfirmRemoveProvider(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 // viewAddProvider renders the add-provider screens.
 func (m Model) viewAddProvider() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Curfew") + dimStyle.Render(" · add provider") + "\n\n")
+	b.WriteString(titleStyle.Render("CURFEW") + dimStyle.Render(" · add provider") + "\n\n")
 	switch m.mode {
 	case modeAddType:
-		b.WriteString("  Provider type:\n")
+		b.WriteString("  " + dimStyle.Render("provider type") + "\n")
 		for i, k := range providerKinds {
 			b.WriteString("  " + chainOpt(i == m.addTypeSel, k) + "\n")
 		}
-		b.WriteString(dimStyle.Render("\n  ↑/↓ choose · Enter next · Esc cancel"))
+		b.WriteString(faintStyle.Render("\n  ↑/↓ choose · enter next · esc cancel"))
 	case modeAddName:
-		b.WriteString(dimStyle.Render("  type: "+m.addKind) + "\n\n  " + m.input.View() + "\n")
-		b.WriteString(dimStyle.Render("  Enter next · Esc cancel"))
+		b.WriteString("  " + dimStyle.Render("type "+m.addKind) + "\n\n  " + m.input.View() + "\n")
+		b.WriteString(faintStyle.Render("  enter next · esc cancel"))
 	case modeAddDir:
-		b.WriteString(dimStyle.Render(fmt.Sprintf("  %s provider %q", m.addKind, m.addName)) + "\n\n  " + m.input.View() + "\n")
+		b.WriteString("  " + dimStyle.Render(fmt.Sprintf("%s provider %q", m.addKind, m.addName)) + "\n\n  " + m.input.View() + "\n")
 		envKey := "CLAUDE_CONFIG_DIR"
 		if m.addKind == "codex" {
 			envKey = "CODEX_HOME"
 		}
-		b.WriteString(dimStyle.Render("  this sets " + envKey + " and the log location · Enter create · Esc cancel"))
+		b.WriteString(faintStyle.Render("  sets " + envKey + " + log location · enter create · esc cancel"))
 	}
 	if m.flash != "" {
 		b.WriteString("\n\n  " + warnStyle.Render(m.flash))
