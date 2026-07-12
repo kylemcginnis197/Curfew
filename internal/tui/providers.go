@@ -81,10 +81,8 @@ func removeProvider(cfg *config.Config, name string) {
 
 // startAddProvider reloads config and prompts for the new provider's name.
 func (m Model) startAddProvider() Model {
-	if path, err := config.ConfigPath(); err == nil {
-		if cfg, err := config.Load(path); err == nil {
-			m.cfg, m.cfgPath = cfg, path
-		}
+	if cfg, err := config.Load(m.cfgPath); err == nil {
+		m.cfg = cfg
 	}
 	m.mode = modeAddName
 	m.addName = ""
@@ -137,7 +135,6 @@ func (m Model) updateAddCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.flash = err.Error()
 			return m, nil
 		}
-		m.input.Prompt = "add reset time: " // restore for the schedule editor
 		if err := m.cfg.Save(m.cfgPath); err != nil {
 			m.flash = "save failed: " + err.Error()
 			if cfg, err := config.Load(m.cfgPath); err == nil {
@@ -146,8 +143,10 @@ func (m Model) updateAddCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = modeDashboard
 			return m, nil
 		}
-		// Open the new provider's editor so the user can add reset times.
-		return m.enterEdit(m.addName), fetch()
+		// Drop straight into the bar editor so the new provider gets its first
+		// reset times; save/esc both land in the provider's editor.
+		m.editProvider = m.addName
+		return m.enterBarEdit(-1), fetch()
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
@@ -160,14 +159,12 @@ func (m Model) updateEditCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.mode = modeEdit
-		m.input.Prompt = "add reset time: " // restore for the schedule editor
 		return m, nil
 	case "enter":
 		if err := setProviderCommand(m.cfg, m.editProvider, m.input.Value()); err != nil {
 			m.flash = err.Error()
 			return m, nil
 		}
-		m.input.Prompt = "add reset time: " // restore for the schedule editor
 		return m.persist("command updated")
 	}
 	var cmd tea.Cmd

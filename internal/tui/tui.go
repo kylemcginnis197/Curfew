@@ -44,26 +44,29 @@ type Model struct {
 	mode         mode
 	cfg          *config.Config // authoritative for editing (loaded from disk)
 	cfgPath      string
-	editProvider string         // provider being edited
-	editSel      int            // cursor over the editor's focusable items
-	daySel       int            // cursor within the weekday row (when it's focused)
-	chainSel     int            // 0 = add whole chain, 1 = add just the one
+	editProvider string // provider being edited
+	editSel      int    // cursor over the editor's focusable items
 	input        textinput.Model
-	pendingReset string   // reset time awaiting the add/chain/remove decision
-	pendingChain []string // full chain offered for the pending reset
+
+	// Bar editor (one day group's working copy).
+	barGroup  int     // index into cfg.Schedules; -1 = new group
+	barCursor int     // cursor minute-of-day, in 15-minute steps
+	barTimes  []int   // working-copy reset minutes
+	barDays   [7]bool // working-copy day mask, Mon-first (weekdayOrder)
+	barFocus  int     // 0 = time bar, 1 = weekday row
+	barDaySel int     // cursor within the weekday row
+	// barDeleteArmed is set by a first Backspace in the bar editor; a second
+	// deletes the group, any other key disarms.
+	barDeleteArmed bool
 
 	// Add-provider flow.
-	addTypeSel int    // cursor over providerKinds
-	addKind    string // chosen kind ("claude"/"codex")
-	addName    string // chosen provider name
+	addName string // chosen provider name
 }
 
 func newModel() Model {
 	ti := textinput.New()
-	ti.Placeholder = "e.g. 8pm or 20:00"
-	ti.Prompt = "add reset time: "
-	ti.CharLimit = 8
-	ti.Width = 12
+	ti.CharLimit = 256
+	ti.Width = 48
 
 	path, _ := config.ConfigPath()
 	cfg, _ := config.Load(path) // nil-safe: editor guards on cfg == nil
@@ -104,10 +107,12 @@ func fireCmd(provider string) tea.Cmd {
 
 func installCmd() tea.Cmd {
 	return func() tea.Msg {
-		if err := service.Install(); err != nil {
+		if err := service.EnsureRunning(); err != nil {
 			return flashMsg("install failed: " + err.Error())
 		}
-		return flashMsg("service installed & started")
+		// The daemon needs a moment to bind its port and write the endpoint file;
+		// the 2s tick re-fetches and the dashboard appears once it's up.
+		return flashMsg("service started — connecting…")
 	}
 }
 
@@ -123,6 +128,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tickMsg:
+		// Keep the dashboard's bars and toggle tracking external config edits;
+		// never reload mid-edit, which would clobber unsaved changes.
+		if m.mode == modeDashboard && m.cfgPath != "" {
+			if cfg, err := config.Load(m.cfgPath); err == nil {
+				m.cfg = cfg
+			}
+		}
 		return m, tea.Batch(fetch(), tick())
 	case flashMsg:
 		m.flash = string(msg)
@@ -130,14 +142,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// Editor modes handle their own keys (esc means "back", not "quit").
 		switch m.mode {
-		case modeInput:
-			return m.updateInput(msg)
+		case modeBarEdit:
+			return m.updateBarEdit(msg)
 		case modeEditCommand:
 			return m.updateEditCommand(msg)
-		case modeConfirmChain:
-			return m.updateConfirmChain(msg)
-		case modeConfirmRemove:
-			return m.updateConfirmRemove(msg)
+		case modeConfirmRemoveGroup:
+			return m.updateConfirmRemoveGroup(msg)
 		case modeConfirmRemoveProvider:
 			return m.updateConfirmRemoveProvider(msg)
 		case modeAddName:
@@ -169,6 +179,8 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.sel < addIdx {
 			m.sel++
 		}
+	case "a":
+		return m.toggleAutoPrime()
 	case "enter":
 		// When the daemon is down, Enter installs & starts it; otherwise Enter
 		// opens the selected provider's editor, or the add-provider flow when the
@@ -185,6 +197,34 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// toggleAutoPrime flips the global auto-reset (primer) setting and saves it;
+// the daemon picks the change up via its config watcher. The config is
+// reloaded first so the toggle never clobbers external edits.
+func (m Model) toggleAutoPrime() (tea.Model, tea.Cmd) {
+	if m.cfgPath == "" {
+		m.flash = "no config loaded"
+		return m, nil
+	}
+	cfg, err := config.Load(m.cfgPath)
+	if err != nil {
+		m.flash = "load failed: " + err.Error()
+		return m, nil
+	}
+	next := !cfg.General.AutoPrimeEnabled()
+	cfg.General.AutoPrime = &next
+	if err := cfg.Save(m.cfgPath); err != nil {
+		m.flash = "save failed: " + err.Error()
+		return m, nil
+	}
+	m.cfg = cfg
+	if next {
+		m.flash = "auto-reset on"
+	} else {
+		m.flash = "auto-reset off"
+	}
+	return m, fetch()
 }
 
 func (m Model) selected() string {
@@ -210,8 +250,17 @@ var (
 	idleStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
 	selStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("231")).Background(lipgloss.Color("236"))
 	warnStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("174")) // muted red
-	okStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("114")) // soft green
+	okStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("71"))  // green
 	headStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+
+	// Timeline bar cells. Active windows use a muted sage (reads "glass" over
+	// dark bg), reset ticks are a dark notch cut into them, the editor cursor
+	// is a white block so it reads over any cell, and the dashboard now-marker
+	// is a quiet steel so it doesn't fight the rest of the bar.
+	barActiveStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("65"))  // muted sage
+	barTickStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("235"))
+	barCursorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("231"))
+	barNowStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("109")) // dusty teal
 )
 
 // healthGlyph is the per-provider health dot shown at the start of each row.
@@ -227,15 +276,26 @@ func padTo(s string, n int) string {
 	return s + strings.Repeat(" ", n-len(r))
 }
 
-// rowWidth is the content width used for the header clock alignment and the
-// selection highlight bar.
-const rowWidth = 46
+// rowWidth is the content width of the edit screens: a 2-column indent plus a
+// 48-cell bar. The header clock and selection highlights align to it.
+const rowWidth = 2 + barCells
+
+// Dashboard column layout: health dot, name, next reset, then the timeline
+// bar. dashWidth is the full row width used for the header clock.
+const (
+	dashNameW  = 11
+	dashResetW = 12
+	dashBarCol = 2 + dashNameW + dashResetW
+	dashWidth  = dashBarCol + barCells
+)
 
 func (m Model) View() string {
 	switch m.mode {
 	case modeAddName, modeAddCommand:
 		return m.viewAddProvider()
-	case modeEdit, modeInput, modeEditCommand, modeConfirmChain, modeConfirmRemove, modeConfirmRemoveProvider:
+	case modeBarEdit:
+		return m.viewBarEdit()
+	case modeEdit, modeEditCommand, modeConfirmRemoveGroup, modeConfirmRemoveProvider:
 		return m.viewEdit()
 	}
 	var b strings.Builder
@@ -254,53 +314,59 @@ func (m Model) View() string {
 
 	s := m.status
 
-	// Header: wordmark left, clock right-aligned.
+	// Header: wordmark left, clock right-aligned over the bar column's edge.
 	clock := s.Now.Local().Format("Mon 15:04")
-	gap := rowWidth - len("CURFEW") - len(clock)
+	gap := dashWidth - len("CURFEW") - len(clock)
 	if gap < 1 {
 		gap = 1
 	}
 	b.WriteString(titleStyle.Render("CURFEW") + strings.Repeat(" ", gap) + dimStyle.Render(clock) + "\n\n")
 
-	// Providers.
+	// Column headers with the 0:00 → 24:00 ruler over the bar column.
+	b.WriteString(headStyle.Render("  "+padTo("model", dashNameW)+padTo("next reset", dashResetW)) +
+		headStyle.Render(renderBarScale()) + "\n")
+
+	// Providers: one row each — name, next reset, today's timeline. The accent
+	// cell on the bar marks the current time.
+	today := s.Now.Local()
+	nowCell := (today.Hour()*60 + today.Minute()) / minutesPerCell
 	for i, p := range s.Providers {
-		stateWord := "idle"
-		detail := ""
+		reset := ""
 		if p.Active {
-			stateWord = "active"
-		} else if !p.NextAnchor.IsZero() {
-			detail = "next " + p.NextAnchor.Local().Format("15:04")
+			reset = p.WindowEnd.Local().Format("15:04")
+		} else if !p.NextReset.IsZero() {
+			reset = p.NextReset.Local().Format("15:04")
 		}
 		hs := healthStyle(providerHealth(p.Name, s.Recent))
+		bar := renderBar(toCells(dayMinutes(m.cfg, p.Name, today)), -1, nowCell)
+		var row string
 		if i == m.sel {
-			plain := padTo(p.Name, 11) + padTo(stateWord, 8)
-			if p.Active {
-				plain += fmt.Sprintf("resets %s   %s left", p.WindowEnd.Local().Format("15:04"), short(time.Until(p.WindowEnd)))
-			} else {
-				plain += detail
-			}
-			dot := selStyle.Foreground(hs.GetForeground()).Render(healthGlyph)
-			b.WriteString(dot + selStyle.Render(padTo(" "+plain, rowWidth-1)) + "\n")
-			continue
-		}
-		name := brightStyle.Render(padTo(p.Name, 11))
-		var st, det string
-		if p.Active {
-			st = accentStyle.Render(padTo(stateWord, 8))
-			det = midStyle.Render("resets "+p.WindowEnd.Local().Format("15:04")) +
-				dimStyle.Render("   "+short(time.Until(p.WindowEnd))+" left")
+			row = selStyle.Foreground(hs.GetForeground()).Render(healthGlyph) +
+				selStyle.Render(" "+padTo(p.Name, dashNameW)+padTo(reset, dashResetW-1)) + " "
 		} else {
-			st = dimStyle.Render(padTo(stateWord, 8))
-			det = dimStyle.Render(detail)
+			rs := dimStyle
+			if p.Active {
+				rs = accentStyle
+			}
+			row = hs.Render(healthGlyph) + " " + brightStyle.Render(padTo(p.Name, dashNameW)) +
+				rs.Render(padTo(reset, dashResetW))
 		}
-		b.WriteString(hs.Render(healthGlyph) + " " + name + st + det + "\n")
+		b.WriteString(row + bar + "\n")
 	}
 	// Add-provider row.
+	b.WriteString("\n")
 	if m.sel == len(s.Providers) {
-		b.WriteString(selStyle.Render(padTo("  + add provider", rowWidth)) + "\n")
+		b.WriteString(selStyle.Render(padTo("  + add provider", dashBarCol)) + "\n")
 	} else {
 		b.WriteString("  " + accentStyle.Render("+") + dimStyle.Render(" add provider") + "\n")
 	}
+
+	// Auto-reset toggle (global; flipped with the `a` key).
+	check, cs := "[ ]", dimStyle
+	if m.cfg != nil && m.cfg.General.AutoPrimeEnabled() {
+		check, cs = "[x]", brightStyle
+	}
+	b.WriteString("\n  " + cs.Render(check) + dimStyle.Render(" automatically reset limit when available") + "\n")
 
 	// Health legend.
 	b.WriteString("\n  " + okStyle.Render(healthGlyph) + dimStyle.Render(" resetting on time   ") +
@@ -309,7 +375,7 @@ func (m Model) View() string {
 	if m.flash != "" {
 		b.WriteString("\n  " + warnStyle.Render(m.flash) + "\n")
 	}
-	b.WriteString(faintStyle.Render("\n  ↑/↓ select · enter open · esc quit"))
+	b.WriteString(faintStyle.Render("\n  ↑/↓ select · enter open · a auto-reset · esc quit"))
 	return b.String()
 }
 
@@ -332,7 +398,7 @@ func providerHealth(name string, events []model.Event) health {
 			continue
 		}
 		switch e.Outcome {
-		case model.Fired, model.Skipped:
+		case model.Fired, model.Skipped, model.Primed:
 			return healthOK
 		case model.Failed, model.Missed:
 			return healthBad

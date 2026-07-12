@@ -20,6 +20,9 @@ const (
 	Missed Outcome = "missed"
 	// Manual marks an anchor fired on demand via "fire now".
 	Manual Outcome = "manual"
+	// Primed means the post-reset primer ran successfully, starting the next
+	// window right at the reset boundary.
+	Primed Outcome = "primed"
 )
 
 // Event is one recorded anchor attempt, persisted to history.
@@ -27,9 +30,9 @@ type Event struct {
 	ID          int64     `json:"id"`
 	Time        time.Time `json:"time"`
 	Provider    string    `json:"provider"`
-	Reset       string    `json:"reset,omitempty"`   // reset boundary served (HH:MM)
+	Reset       string    `json:"reset,omitempty"` // reset boundary served (HH:MM)
 	Outcome     Outcome   `json:"outcome"`
-	Detail      string    `json:"detail,omitempty"`  // error or skip reason
+	Detail      string    `json:"detail,omitempty"` // error or skip reason
 	WindowStart time.Time `json:"window_start,omitempty"`
 }
 

@@ -9,7 +9,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/kyle/curfew/internal/config"
-	"github.com/kyle/curfew/internal/schedule"
 )
 
 // mode selects which screen/keymap is active.
@@ -18,19 +17,13 @@ type mode int
 const (
 	modeDashboard mode = iota
 	modeEdit
-	modeInput
+	modeBarEdit
 	modeEditCommand
-	modeConfirmChain
-	modeConfirmRemove
+	modeConfirmRemoveGroup
 	modeConfirmRemoveProvider
 	modeAddName
 	modeAddCommand
 )
-
-// earliestAnchorMin is the earliest wall-clock minute-of-day an auto-chained
-// anchor may fall on; the chain stops backfilling once an earlier reset would
-// require anchoring before this (05:00 by default).
-const earliestAnchorMin = 5 * 60
 
 // weekdayOrder is the Mon-first display order for the weekday toggle row.
 var weekdayOrder = []time.Weekday{
@@ -48,53 +41,73 @@ var weekdayToken = map[time.Weekday]string{
 // enterEdit switches to the schedule editor for a provider, reloading config
 // from disk so any external hand-edits are reflected.
 func (m Model) enterEdit(provider string) Model {
-	if path, err := config.ConfigPath(); err == nil {
-		if cfg, err := config.Load(path); err == nil {
-			m.cfg, m.cfgPath = cfg, path
-		}
+	if cfg, err := config.Load(m.cfgPath); err == nil {
+		m.cfg = cfg
 	}
 	m.mode = modeEdit
 	m.editProvider = provider
-	m.daySel = 0
 	m.flash = ""
-	// Start focus on the first reset row if any, else the "Add" item — never on
+	// Start focus on the first group if any, else the "Add" item — never on
 	// "Fire now", so an immediate Enter can't fire by accident.
 	it := m.items()
-	if it.resetCount > 0 {
-		m.editSel = it.firstReset
+	if it.groupCount > 0 {
+		m.editSel = it.firstGroup
 	} else {
 		m.editSel = it.addIdx
 	}
 	return m
 }
 
+// enterBarEdit opens the bar editor on a working copy of one day group.
+// schedIdx is an index into cfg.Schedules, or -1 to create a new group
+// (prefilled Mon-Fri).
+func (m Model) enterBarEdit(schedIdx int) Model {
+	m.mode = modeBarEdit
+	m.barGroup = schedIdx
+	m.barFocus = 0
+	m.barDaySel = 0
+	m.barDeleteArmed = false
+	m.flash = ""
+	if schedIdx >= 0 && m.cfg != nil && schedIdx < len(m.cfg.Schedules) {
+		m.barTimes, m.barDays = groupToWorking(m.cfg.Schedules[schedIdx])
+	} else {
+		m.barGroup = -1
+		m.barTimes = nil
+		m.barDays = [7]bool{true, true, true, true, true, false, false} // Mon-Fri
+	}
+	if len(m.barTimes) > 0 {
+		m.barCursor = m.barTimes[0]
+	} else {
+		m.barCursor = 12 * 60
+	}
+	return m
+}
+
 // editItems describes the layout of the editor's flat, arrow-navigable list:
-// [Fire now] · [Command] · reset rows · [Add reset time] · [Days row] · [Remove provider].
+// [Fire now] · [Command] · group rows · [Add reset times] · [Remove provider].
 type editItems struct {
 	fireIdx    int
 	cmdIdx     int
-	firstReset int
-	resetCount int
+	firstGroup int
+	groupCount int
 	addIdx     int
-	daysIdx    int
 	removeIdx  int
 	count      int
 }
 
 func (m Model) items() editItems {
-	r := len(providerResets(m.cfg, m.editProvider))
-	it := editItems{fireIdx: 0, cmdIdx: 1, firstReset: 2, resetCount: r}
-	it.addIdx = 2 + r
-	it.daysIdx = it.addIdx + 1
-	it.removeIdx = it.daysIdx + 1
+	g := len(providerGroups(m.cfg, m.editProvider))
+	it := editItems{fireIdx: 0, cmdIdx: 1, firstGroup: 2, groupCount: g}
+	it.addIdx = 2 + g
+	it.removeIdx = it.addIdx + 1
 	it.count = it.removeIdx + 1
 	return it
 }
 
 // --- key handling ---
 
-// updateEdit drives the flat item list with arrows + Enter + Esc. Left/Right
-// only matter while the Days row is focused.
+// updateEdit drives the flat item list with arrows + Enter + Esc. On a group
+// row, x/d asks to delete the group.
 func (m Model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	it := m.items()
 	switch msg.String() {
@@ -110,18 +123,24 @@ func (m Model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.editSel < it.count-1 {
 			m.editSel++
 		}
-	case "left":
-		if m.editSel == it.daysIdx && m.daySel > 0 {
-			m.daySel--
-		}
-	case "right":
-		if m.editSel == it.daysIdx && m.daySel < len(weekdayOrder)-1 {
-			m.daySel++
+	case "x", "d", "backspace":
+		if i := m.focusedGroup(it); i >= 0 {
+			m.barGroup = i
+			m.mode = modeConfirmRemoveGroup
 		}
 	case "enter":
 		return m.activate(it)
 	}
 	return m, nil
+}
+
+// focusedGroup returns the cfg.Schedules index of the focused group row, or -1.
+func (m Model) focusedGroup(it editItems) int {
+	groups := providerGroups(m.cfg, m.editProvider)
+	if i := m.editSel - it.firstGroup; i >= 0 && i < len(groups) {
+		return groups[i]
+	}
+	return -1
 }
 
 // activate performs the action for the currently focused item.
@@ -142,95 +161,159 @@ func (m Model) activate(it editItems) (tea.Model, tea.Cmd) {
 		m.flash = ""
 		return m, nil
 	case m.editSel == it.addIdx:
-		m.mode = modeInput
-		m.input.Prompt = "add reset time: "
-		m.input.Placeholder = "e.g. 8pm or 20:00"
-		m.input.Width = 12
-		m.input.CharLimit = 8
-		m.input.SetValue("")
-		m.input.Focus()
-		m.flash = ""
-		return m, nil
-	case m.editSel == it.daysIdx:
-		if err := toggleDay(m.cfg, m.editProvider, weekdayOrder[m.daySel]); err != nil {
-			m.flash = err.Error()
-			return m, nil
-		}
-		return m.persist("days updated")
+		return m.enterBarEdit(-1), nil
 	case m.editSel == it.removeIdx:
 		m.mode = modeConfirmRemoveProvider
 		return m, nil
-	default: // a reset row is focused → confirm removal
-		resets := providerResets(m.cfg, m.editProvider)
-		if i := m.editSel - it.firstReset; i >= 0 && i < len(resets) {
-			m.pendingReset = resets[i]
-			m.mode = modeConfirmRemove
+	default: // a group row is focused → open the bar editor on it
+		if i := m.focusedGroup(it); i >= 0 {
+			return m.enterBarEdit(i), nil
 		}
 		return m, nil
 	}
 }
 
-func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+// updateBarEdit drives the bar editor: a time cursor over a 0:00→24:00 bar
+// plus a weekday toggle row. Every change autosaves; Backspace twice removes
+// the reset at the cursor.
+func (m Model) updateBarEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	onDays := m.barFocus == 1
+	if msg.String() != "backspace" && m.barDeleteArmed {
+		m.barDeleteArmed = false
+		m.flash = ""
+	}
 	switch msg.String() {
 	case "esc":
 		m.mode = modeEdit
+		m.flash = ""
 		return m, nil
-	case "enter":
-		norm, ok := parseFlexibleTime(m.input.Value())
-		if !ok {
-			m.flash = "invalid time — try 8pm, 8:00pm, or 20:00"
+	case "backspace":
+		if onDays {
 			return m, nil
 		}
-		m.pendingReset = norm
-		chain := chainResets(norm, m.providerWindow())
-		if len(chain) > 1 {
-			m.pendingChain = chain
-			m.chainSel = 0
-			m.mode = modeConfirmChain
+		i, hit := timeInSlot(m.barTimes, m.barCursor)
+		if !hit {
+			m.barDeleteArmed = false
+			m.flash = "no reset at " + hhmm(m.barCursor)
 			return m, nil
 		}
-		addReset(m.cfg, m.editProvider, norm)
-		return m.persist("added " + norm)
-	}
-	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
-	return m, cmd
-}
-
-// updateConfirmChain lets the user pick "add all" vs "just this one" with the
-// arrows, Enter to confirm, Esc to cancel.
-func (m Model) updateConfirmChain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
+		if !m.barDeleteArmed {
+			m.barDeleteArmed = true
+			m.flash = "backspace again to remove " + hhmm(m.barTimes[i])
+			return m, nil
+		}
+		m.barDeleteArmed = false
+		removed := m.barTimes[i]
+		m.barTimes = append(m.barTimes[:i:i], m.barTimes[i+1:]...)
+		return m.autosaveBar("removed " + hhmm(removed))
 	case "up", "down":
-		m.chainSel = 1 - m.chainSel
-	case "enter":
-		if m.chainSel == 0 {
-			for _, r := range m.pendingChain {
-				addReset(m.cfg, m.editProvider, r)
+		m.barFocus = 1 - m.barFocus
+	case "left":
+		if onDays {
+			if m.barDaySel > 0 {
+				m.barDaySel--
 			}
-			n := len(m.pendingChain)
-			m.pendingChain = nil
-			return m.persist(fmt.Sprintf("added %d resets", n))
+		} else {
+			m.barCursor = clampMinute(m.barCursor - 60)
 		}
-		addReset(m.cfg, m.editProvider, m.pendingReset)
-		one := m.pendingReset
-		m.pendingChain = nil
-		return m.persist("added " + one)
-	case "esc":
-		m.mode = modeEdit
-		m.pendingChain = nil
-		return m, nil
+	case "right":
+		if onDays {
+			if m.barDaySel < len(weekdayOrder)-1 {
+				m.barDaySel++
+			}
+		} else {
+			m.barCursor = clampMinute(m.barCursor + 60)
+		}
+	// ctrl+arrows are the documented fine step; shift+arrows and H/L cover
+	// terminals that swallow ctrl+arrow sequences.
+	case "ctrl+left", "shift+left", "H":
+		if !onDays {
+			m.barCursor = clampMinute(m.barCursor - 15)
+		}
+	case "ctrl+right", "shift+right", "L":
+		if !onDays {
+			m.barCursor = clampMinute(m.barCursor + 15)
+		}
+	case "enter", " ":
+		if onDays {
+			// Refuse turning the last day off: a saved schedule needs one.
+			if m.barDays[m.barDaySel] && countDays(m.barDays) == 1 {
+				m.flash = "keep at least one day"
+				return m, nil
+			}
+			m.barDays[m.barDaySel] = !m.barDays[m.barDaySel]
+			return m.autosaveBar("days updated")
+		}
+		if _, hit := timeInSlot(m.barTimes, m.barCursor); hit {
+			m.barTimes, _ = toggleTimeAt(m.barTimes, m.barCursor)
+			return m.autosaveBar("removed " + hhmm(m.barCursor))
+		}
+		// A reset closer than the window length to a neighbor would land
+		// mid-window: its anchor fires while the previous window is still
+		// open and gets skipped, so the "reset" never happens.
+		win := providerWindowMinutes(m.cfg, m.editProvider)
+		if c, clash := conflictingTime(m.barTimes, m.barCursor, win); clash {
+			m.flash = fmt.Sprintf("too close to %s — resets must be %s apart (the window length)",
+				hhmm(c), short(time.Duration(win)*time.Minute))
+			return m, nil
+		}
+		m.barTimes, _ = toggleTimeAt(m.barTimes, m.barCursor)
+		return m.autosaveBar("added " + hhmm(m.barCursor))
 	}
 	return m, nil
 }
 
-// updateConfirmRemove removes the focused reset on Enter, cancels on Esc.
-func (m Model) updateConfirmRemove(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+// autosaveBar persists the working copy after every bar-editor change, staying
+// in the editor. An empty group is removed from the config (or simply not
+// created yet); the first added time creates the schedule entry.
+func (m Model) autosaveBar(flash string) (tea.Model, tea.Cmd) {
+	if m.cfg == nil {
+		m.flash = "no config loaded"
+		return m, nil
+	}
+	if len(m.barTimes) == 0 {
+		if m.barGroup < 0 {
+			m.flash = flash // nothing persisted yet
+			return m, nil
+		}
+		deleteGroup(m.cfg, m.barGroup)
+		m.barGroup = -1
+	} else {
+		sched := workingToSchedule(m.editProvider, m.barTimes, m.barDays)
+		setGroup(m.cfg, m.barGroup, sched)
+		if m.barGroup < 0 {
+			m.barGroup = len(m.cfg.Schedules) - 1
+		}
+	}
+	if err := m.cfg.Save(m.cfgPath); err != nil {
+		m.flash = "save failed: " + err.Error()
+		if cfg, err := config.Load(m.cfgPath); err == nil {
+			m.cfg = cfg // discard the invalid change
+		}
+		return m, nil
+	}
+	m.flash = flash
+	return m, fetch()
+}
+
+// countDays reports how many weekdays are selected.
+func countDays(days [7]bool) int {
+	n := 0
+	for _, on := range days {
+		if on {
+			n++
+		}
+	}
+	return n
+}
+
+// updateConfirmRemoveGroup deletes the pending group on Enter or a second
+// Backspace, cancels on Esc.
+func (m Model) updateConfirmRemoveGroup(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "enter":
-		removed := m.pendingReset
-		removeReset(m.cfg, m.editProvider, removed)
-		return m.persist("removed " + removed)
+	case "enter", "backspace":
+		deleteGroup(m.cfg, m.barGroup)
+		return m.persist("removed schedule")
 	case "esc":
 		m.mode = modeEdit
 		return m, nil
@@ -261,195 +344,153 @@ func (m Model) persist(flash string) (tea.Model, tea.Cmd) {
 	return m, fetch()
 }
 
-// providerWindow returns the edited provider's window length in minutes
-// (defaulting to 300 if the provider is somehow missing).
-func (m Model) providerWindow() int {
-	if m.cfg != nil {
-		if p, ok := m.cfg.Provider(m.editProvider); ok && p.WindowMinutes > 0 {
-			return p.WindowMinutes
-		}
-	}
-	return 300
-}
-
 // --- pure helpers (unit-tested) ---
 
-// parseFlexibleTime normalizes a user-typed time to "HH:MM". It accepts 24-hour
-// ("20:00", "9", "9:30") and 12-hour ("8pm", "8:00pm", "8 pm") forms.
-func parseFlexibleTime(s string) (string, bool) {
-	s = strings.ToLower(strings.TrimSpace(s))
-	s = strings.ReplaceAll(s, " ", "")
-	if s == "" {
-		return "", false
-	}
-	pm := strings.HasSuffix(s, "pm")
-	am := strings.HasSuffix(s, "am")
-	if pm || am {
-		s = s[:len(s)-2]
-	}
-	var hStr, mStr string
-	if i := strings.IndexByte(s, ':'); i >= 0 {
-		hStr, mStr = s[:i], s[i+1:]
-	} else {
-		hStr, mStr = s, "0"
-	}
-	h, err1 := strconv.Atoi(hStr)
-	mn, err2 := strconv.Atoi(mStr)
-	if err1 != nil || err2 != nil || mn < 0 || mn > 59 {
-		return "", false
-	}
-	if am || pm {
-		if h < 1 || h > 12 {
-			return "", false
-		}
-		switch {
-		case am && h == 12:
-			h = 0
-		case pm && h != 12:
-			h += 12
-		}
-	} else if h < 0 || h > 23 {
-		return "", false
-	}
-	return fmt.Sprintf("%02d:%02d", h, mn), true
-}
-
-// chainResets returns the reset time plus the earlier resets that chain back to
-// it in windowMin steps, stopping once an earlier reset would anchor before
-// earliestAnchorMin. The result is sorted ascending. A single-element result
-// means there's nothing to backfill.
-func chainResets(hhmm string, windowMin int) []string {
-	total, ok := minutesOfDay(hhmm)
-	if !ok {
-		return []string{hhmm}
-	}
-	out := []int{total}
-	for cur := total; ; {
-		prev := cur - windowMin
-		if prev-windowMin < earliestAnchorMin {
-			break
-		}
-		out = append(out, prev)
-		cur = prev
-	}
-	sort.Ints(out)
-	res := make([]string, len(out))
-	for i, v := range out {
-		res[i] = fmt.Sprintf("%02d:%02d", v/60, v%60)
-	}
-	return res
-}
-
-// providerScheduleIdx returns the index of the provider's first schedule block,
-// or -1.
-func providerScheduleIdx(cfg *config.Config, provider string) int {
+// providerGroups returns the cfg.Schedules indices belonging to a provider,
+// in config order. Each schedule entry is one editable day group.
+func providerGroups(cfg *config.Config, provider string) []int {
 	if cfg == nil {
-		return -1
-	}
-	for i := range cfg.Schedules {
-		if cfg.Schedules[i].Provider == provider {
-			return i
-		}
-	}
-	return -1
-}
-
-// providerResets returns the provider's first schedule's reset times.
-func providerResets(cfg *config.Config, provider string) []string {
-	if i := providerScheduleIdx(cfg, provider); i >= 0 {
-		return cfg.Schedules[i].ResetsAt
-	}
-	return nil
-}
-
-// addReset adds a reset time to the provider's first schedule (creating one if
-// none exists), deduped and kept sorted.
-func addReset(cfg *config.Config, provider, hhmm string) {
-	i := providerScheduleIdx(cfg, provider)
-	if i < 0 {
-		cfg.Schedules = append(cfg.Schedules, config.Schedule{
-			Provider: provider,
-			ResetsAt: []string{hhmm},
-			Days:     []string{"Mon", "Tue", "Wed", "Thu", "Fri"},
-		})
-		return
-	}
-	for _, r := range cfg.Schedules[i].ResetsAt {
-		if r == hhmm {
-			return
-		}
-	}
-	cfg.Schedules[i].ResetsAt = append(cfg.Schedules[i].ResetsAt, hhmm)
-	sort.Strings(cfg.Schedules[i].ResetsAt)
-}
-
-// removeReset removes a reset time; if that empties a schedule's reset list, the
-// schedule entry is dropped (an empty resets_at would fail validation).
-func removeReset(cfg *config.Config, provider, hhmm string) {
-	i := providerScheduleIdx(cfg, provider)
-	if i < 0 {
-		return
-	}
-	kept := cfg.Schedules[i].ResetsAt[:0:0]
-	for _, r := range cfg.Schedules[i].ResetsAt {
-		if r != hhmm {
-			kept = append(kept, r)
-		}
-	}
-	if len(kept) == 0 {
-		cfg.Schedules = append(cfg.Schedules[:i], cfg.Schedules[i+1:]...)
-		return
-	}
-	cfg.Schedules[i].ResetsAt = kept
-}
-
-// toggleDay flips a weekday on the provider's first schedule. It refuses to
-// remove the last remaining day. When all seven end up selected it stores an
-// empty Days list (the config's canonical "every day").
-func toggleDay(cfg *config.Config, provider string, wd time.Weekday) error {
-	i := providerScheduleIdx(cfg, provider)
-	if i < 0 {
-		return fmt.Errorf("add a reset time first")
-	}
-	cur := map[time.Weekday]bool{}
-	for _, d := range cfg.Schedules[i].Weekdays() { // empty Days => all seven
-		cur[d] = true
-	}
-	cur[wd] = !cur[wd]
-
-	var selected []time.Weekday
-	for _, d := range weekdayOrder {
-		if cur[d] {
-			selected = append(selected, d)
-		}
-	}
-	if len(selected) == 0 {
-		return fmt.Errorf("keep at least one day")
-	}
-	if len(selected) == 7 {
-		cfg.Schedules[i].Days = nil
 		return nil
 	}
-	tokens := make([]string, len(selected))
-	for j, d := range selected {
-		tokens[j] = weekdayToken[d]
-	}
-	cfg.Schedules[i].Days = tokens
-	return nil
-}
-
-// dayEnabled reports whether a schedule currently runs on wd (for rendering).
-func dayEnabled(cfg *config.Config, provider string, wd time.Weekday) bool {
-	i := providerScheduleIdx(cfg, provider)
-	if i < 0 {
-		return false
-	}
-	for _, d := range cfg.Schedules[i].Weekdays() {
-		if d == wd {
-			return true
+	var out []int
+	for i := range cfg.Schedules {
+		if cfg.Schedules[i].Provider == provider {
+			out = append(out, i)
 		}
 	}
-	return false
+	return out
+}
+
+// groupToWorking converts a schedule into the bar editor's working copy:
+// reset minutes plus a Mon-first day mask.
+func groupToWorking(s config.Schedule) ([]int, [7]bool) {
+	var times []int
+	for _, r := range s.ResetsAt {
+		if v, ok := minutesOfDay(r); ok {
+			times = append(times, v)
+		}
+	}
+	sort.Ints(times)
+	var days [7]bool
+	on := map[time.Weekday]bool{}
+	for _, d := range s.Weekdays() { // empty Days => all seven
+		on[d] = true
+	}
+	for i, d := range weekdayOrder {
+		days[i] = on[d]
+	}
+	return times, days
+}
+
+// workingToSchedule builds a schedule from the working copy, sorting times and
+// storing all-seven-days as an empty Days list (the config's canonical form).
+func workingToSchedule(provider string, times []int, days [7]bool) config.Schedule {
+	sorted := append([]int(nil), times...)
+	sort.Ints(sorted)
+	resets := make([]string, len(sorted))
+	for i, v := range sorted {
+		resets[i] = hhmm(v)
+	}
+	var tokens []string
+	for i, d := range weekdayOrder {
+		if days[i] {
+			tokens = append(tokens, weekdayToken[d])
+		}
+	}
+	if len(tokens) == 7 {
+		tokens = nil
+	}
+	return config.Schedule{Provider: provider, ResetsAt: resets, Days: tokens}
+}
+
+// setGroup replaces the schedule at schedIdx, or appends when schedIdx is -1.
+func setGroup(cfg *config.Config, schedIdx int, s config.Schedule) {
+	if schedIdx >= 0 && schedIdx < len(cfg.Schedules) {
+		cfg.Schedules[schedIdx] = s
+		return
+	}
+	cfg.Schedules = append(cfg.Schedules, s)
+}
+
+// deleteGroup removes the schedule at schedIdx.
+func deleteGroup(cfg *config.Config, schedIdx int) {
+	if cfg == nil || schedIdx < 0 || schedIdx >= len(cfg.Schedules) {
+		return
+	}
+	cfg.Schedules = append(cfg.Schedules[:schedIdx], cfg.Schedules[schedIdx+1:]...)
+}
+
+// toggleTimeAt removes the first time sharing the cursor's 15-minute slot, or
+// inserts the cursor minute (kept sorted) when the slot is empty. The bool
+// reports whether a time was removed.
+func toggleTimeAt(times []int, cursor int) ([]int, bool) {
+	if i, hit := timeInSlot(times, cursor); hit {
+		return append(times[:i:i], times[i+1:]...), true
+	}
+	out := append(append([]int(nil), times...), cursor)
+	sort.Ints(out)
+	return out, false
+}
+
+// timeInSlot returns the index of the time sharing the cursor's 15-minute
+// slot, if any.
+func timeInSlot(times []int, cursor int) (int, bool) {
+	for i, t := range times {
+		if t/15 == cursor/15 {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
+// conflictingTime returns an existing time strictly closer than windowMin to
+// t. Two such resets can't both work: the later one's anchor fires inside the
+// earlier one's window and is skipped.
+func conflictingTime(times []int, t, windowMin int) (int, bool) {
+	for _, e := range times {
+		d := t - e
+		if d < 0 {
+			d = -d
+		}
+		if d < windowMin {
+			return e, true
+		}
+	}
+	return 0, false
+}
+
+// clampMinute keeps a bar cursor within 0:00–23:45.
+func clampMinute(v int) int {
+	if v < 0 {
+		return 0
+	}
+	if v > 24*60-15 {
+		return 24*60 - 15
+	}
+	return v
+}
+
+// hhmm renders a minute-of-day as "HH:MM".
+func hhmm(v int) string {
+	return fmt.Sprintf("%02d:%02d", v/60, v%60)
+}
+
+// groupDaysLabel summarizes a schedule's days for group rows.
+func groupDaysLabel(s config.Schedule) string {
+	if len(s.Days) == 0 {
+		return "every day"
+	}
+	on := map[time.Weekday]bool{}
+	for _, d := range s.Weekdays() {
+		on[d] = true
+	}
+	var tokens []string
+	for _, d := range weekdayOrder {
+		if on[d] {
+			tokens = append(tokens, weekdayToken[d])
+		}
+	}
+	return strings.Join(tokens, " ")
 }
 
 func minutesOfDay(hhmm string) (int, bool) {
@@ -465,7 +506,7 @@ func minutesOfDay(hhmm string) (int, bool) {
 	return h*60 + mn, true
 }
 
-// --- view ---
+// --- views ---
 
 func (m Model) viewEdit() string {
 	var b strings.Builder
@@ -478,13 +519,13 @@ func (m Model) viewEdit() string {
 	}
 
 	it := m.items()
-	win := m.providerWindow()
-	resets := providerResets(m.cfg, m.editProvider)
+	win := providerWindowMinutes(m.cfg, m.editProvider)
+	groups := providerGroups(m.cfg, m.editProvider)
 
 	// item highlights a focused row as a subtle full-width bar.
 	item := func(idx int, label string) string {
 		if m.editSel == idx {
-			return selStyle.Render(padTo("  "+label, 34))
+			return selStyle.Render(padTo("  "+label, rowWidth))
 		}
 		return "  " + label
 	}
@@ -499,61 +540,43 @@ func (m Model) viewEdit() string {
 	// command (the shell command run to anchor this provider's limit)
 	cmd := providerCommand(m.cfg, m.editProvider)
 	if m.editSel == it.cmdIdx {
-		b.WriteString(item(it.cmdIdx, "command  "+clip(cmd, 23)) + "\n\n")
+		b.WriteString(item(it.cmdIdx, "command  "+clip(cmd, 33)) + "\n\n")
 	} else {
 		b.WriteString("  " + midStyle.Render("command") + faintStyle.Render("   "+clip(cmd, 32)) + "\n\n")
 	}
 
-	// reset → anchor rows
-	b.WriteString(dimStyle.Render(fmt.Sprintf("  %-8s   %s", "reset", "anchor")) + "\n")
-	if len(resets) == 0 {
+	// current reset times, one bar per day group
+	b.WriteString(dimStyle.Render("  current reset times") + "\n")
+	if len(groups) == 0 {
 		b.WriteString("  " + faintStyle.Render("none yet") + "\n")
 	}
-	for i, r := range resets {
-		anchor := "?"
-		if a, err := schedule.AnchorForReset(win, r); err == nil {
-			anchor = fmt.Sprintf("%02d:%02d", a.Hour, a.Min)
-			if a.DayShift < 0 {
-				anchor += " (prev day)"
-			}
+	for gi, si := range groups {
+		s := m.cfg.Schedules[si]
+		times, _ := groupToWorking(s)
+		labels := make([]string, len(times))
+		for i, t := range times {
+			labels[i] = hhmm(t)
 		}
-		if m.editSel == it.firstReset+i {
-			b.WriteString(item(it.firstReset+i, fmt.Sprintf("%-8s→  %s", r, anchor)) + "\n")
+		if m.editSel == it.firstGroup+gi {
+			label := groupDaysLabel(s) + " · " + strings.Join(labels, " ")
+			b.WriteString(item(it.firstGroup+gi, clip(label, rowWidth-2)) + "\n")
 		} else {
-			b.WriteString("  " + brightStyle.Render(fmt.Sprintf("%-8s", r)) + dimStyle.Render("→  "+anchor) + "\n")
+			b.WriteString("  " + midStyle.Render(groupDaysLabel(s)) +
+				dimStyle.Render(" · "+strings.Join(labels, " ")) + "\n")
 		}
+		b.WriteString("  " + renderBar(groupCells(times, win), -1, -1) + "\n")
 	}
 
-	// add reset
+	// add group
 	b.WriteString("\n")
 	if m.editSel == it.addIdx {
-		b.WriteString(item(it.addIdx, "+ add reset time") + "\n")
+		b.WriteString(item(it.addIdx, "+ add reset times") + "\n")
 	} else {
-		b.WriteString("  " + accentStyle.Render("+") + dimStyle.Render(" add reset time") + "\n")
+		b.WriteString("  " + accentStyle.Render("+") + dimStyle.Render(" add reset times") + "\n")
 	}
-
-	// days
-	b.WriteString("\n  ")
-	daysLbl := dimStyle
-	if m.editSel == it.daysIdx {
-		daysLbl = accentStyle
-	}
-	b.WriteString(daysLbl.Render("days") + "  ")
-	for i, d := range weekdayOrder {
-		tok := weekdayToken[d]
-		on := dayEnabled(m.cfg, m.editProvider, d)
-		switch {
-		case m.editSel == it.daysIdx && i == m.daySel:
-			b.WriteString(selStyle.Render(" "+tok+" ") + " ")
-		case on:
-			b.WriteString(accentStyle.Render(tok) + " ")
-		default:
-			b.WriteString(faintStyle.Render(tok) + " ")
-		}
-	}
-	b.WriteString("\n\n")
 
 	// remove provider
+	b.WriteString("\n")
 	if m.editSel == it.removeIdx {
 		b.WriteString(item(it.removeIdx, "× remove provider") + "\n")
 	} else {
@@ -562,31 +585,81 @@ func (m Model) viewEdit() string {
 
 	// Mode-specific prompt + contextual footer.
 	switch m.mode {
-	case modeInput:
-		b.WriteString("\n  " + m.input.View() + "\n")
-		b.WriteString(faintStyle.Render("  enter confirm · esc cancel"))
 	case modeEditCommand:
 		b.WriteString("\n  " + dimStyle.Render("command to anchor "+m.editProvider+" (as you'd type it in a terminal)") +
 			"\n\n  " + m.input.View() + "\n")
 		b.WriteString(faintStyle.Render("  runs via your shell · enter save · esc cancel"))
-	case modeConfirmChain:
-		b.WriteString("\n  " + midStyle.Render("also add the earlier chained resets?") + "\n")
-		b.WriteString("  " + chainOpt(m.chainSel == 0, "add all: "+strings.Join(m.pendingChain, ", ")) + "\n")
-		b.WriteString("  " + chainOpt(m.chainSel == 1, "just "+m.pendingReset) + "\n")
-		b.WriteString(faintStyle.Render("  ↑/↓ choose · enter confirm · esc cancel"))
-	case modeConfirmRemove:
-		b.WriteString("\n  " + warnStyle.Render("remove reset "+m.pendingReset+"?") + "\n")
-		b.WriteString(faintStyle.Render("  enter remove · esc cancel"))
+	case modeConfirmRemoveGroup:
+		desc := ""
+		if m.barGroup >= 0 && m.barGroup < len(m.cfg.Schedules) {
+			desc = groupDaysLabel(m.cfg.Schedules[m.barGroup])
+		}
+		b.WriteString("\n  " + warnStyle.Render("remove the "+desc+" reset times?") + "\n")
+		b.WriteString(faintStyle.Render("  backspace/enter remove · esc cancel"))
 	case modeConfirmRemoveProvider:
 		b.WriteString("\n  " + warnStyle.Render("remove provider "+m.editProvider+"?") + "\n")
 		b.WriteString(faintStyle.Render("  enter remove · esc cancel"))
 	default:
-		hint := "↑/↓ move · enter select · esc back"
-		if m.editSel == it.daysIdx {
-			hint = "↑/↓ move · ←/→ pick day · enter toggle · esc back"
-		}
+		hint := "↑/↓ move · enter open · ⌫ remove · esc back"
 		b.WriteString(faintStyle.Render("\n  " + hint))
 	}
+
+	if m.flash != "" {
+		b.WriteString("\n\n  " + warnStyle.Render(m.flash))
+	}
+	return b.String()
+}
+
+// viewBarEdit renders the bar editor: weekday toggles, the editable timeline,
+// and the working times list.
+func (m Model) viewBarEdit() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("CURFEW") + dimStyle.Render(" · edit · ") + brightStyle.Render(m.editProvider) +
+		dimStyle.Render(" · reset times") + "\n\n")
+
+	// Weekday toggle row. Every token renders 5 columns wide so the row never
+	// shifts as the day cursor moves.
+	b.WriteString(" ")
+	for i, d := range weekdayOrder {
+		cell := " " + weekdayToken[d] + " "
+		switch {
+		case m.barFocus == 1 && i == m.barDaySel:
+			b.WriteString(selStyle.Render(cell))
+		case m.barDays[i]:
+			b.WriteString(accentStyle.Render(cell))
+		default:
+			b.WriteString(faintStyle.Render(cell))
+		}
+	}
+	b.WriteString("\n\n")
+
+	// Scale + editable bar.
+	cursorCell := -1
+	if m.barFocus == 0 {
+		cursorCell = m.barCursor / minutesPerCell
+	}
+	win := providerWindowMinutes(m.cfg, m.editProvider)
+	b.WriteString("  " + headStyle.Render(renderBarScale()) + "\n")
+	b.WriteString("  " + renderBar(groupCells(m.barTimes, win), cursorCell, -1) + "\n\n")
+
+	// Cursor + working times.
+	b.WriteString("  " + dimStyle.Render("cursor ") + brightStyle.Render(hhmm(m.barCursor)))
+	if len(m.barTimes) > 0 {
+		labels := make([]string, len(m.barTimes))
+		for i, t := range m.barTimes {
+			labels[i] = hhmm(t)
+		}
+		b.WriteString(dimStyle.Render("   resets ") + midStyle.Render(strings.Join(labels, " ")))
+	} else {
+		b.WriteString(dimStyle.Render("   no reset times yet"))
+	}
+	b.WriteString("\n")
+
+	hint := "←/→ 1h · ctrl+←/→ 15m · enter add/remove · ↑/↓ days · s save · ⌫⌫ delete · esc cancel"
+	if m.barFocus == 1 {
+		hint = "←/→ pick day · enter toggle · ↑/↓ back to bar · s save · ⌫⌫ delete · esc cancel"
+	}
+	b.WriteString(faintStyle.Render("\n  " + hint))
 
 	if m.flash != "" {
 		b.WriteString("\n\n  " + warnStyle.Render(m.flash))
@@ -604,12 +677,4 @@ func clip(s string, n int) string {
 		return string(r[:n])
 	}
 	return string(r[:n-1]) + "…"
-}
-
-// chainOpt renders one selectable option in the chain prompt.
-func chainOpt(selected bool, label string) string {
-	if selected {
-		return selStyle.Render(padTo(label, 40))
-	}
-	return dimStyle.Render(label)
 }

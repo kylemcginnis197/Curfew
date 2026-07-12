@@ -27,6 +27,25 @@ type General struct {
 	// times are computed in this zone so resets land on the wall-clock the user
 	// expects, DST included.
 	Timezone string `toml:"timezone"`
+	// PrimeDelayMinutes is how long after each scheduled reset the primer fires
+	// to start the next window immediately. <= 0 (unset) means the default of 1.
+	PrimeDelayMinutes int `toml:"prime_delay_minutes"`
+	// AutoPrime enables the post-reset primers. Absent (nil) means enabled, so
+	// existing configs keep priming without edits.
+	AutoPrime *bool `toml:"auto_prime"`
+}
+
+// AutoPrimeEnabled reports whether primers should fire; unset defaults to true.
+func (g General) AutoPrimeEnabled() bool {
+	return g.AutoPrime == nil || *g.AutoPrime
+}
+
+// PrimeDelay returns the primer delay in minutes, defaulting to 1 when unset.
+func (g General) PrimeDelay() int {
+	if g.PrimeDelayMinutes <= 0 {
+		return 1
+	}
+	return g.PrimeDelayMinutes
 }
 
 // Provider describes how to anchor and observe one CLI tool's usage window.
@@ -179,7 +198,9 @@ func (c *Config) Save(path string) error {
 	var sb strings.Builder
 	sb.WriteString("# Curfew configuration. Edit here or via the TUI.\n")
 	sb.WriteString("# resets_at are the wall-clock times you want fresh capacity;\n")
-	sb.WriteString("# Curfew fires an anchor window_minutes earlier for each.\n\n")
+	sb.WriteString("# Curfew fires an anchor window_minutes earlier for each, and a\n")
+	sb.WriteString("# primer prime_delay_minutes after so the next window starts on time\n")
+	sb.WriteString("# (unless auto_prime = false).\n\n")
 	enc := toml.NewEncoder(&sb)
 	if err := enc.Encode(c); err != nil {
 		return err

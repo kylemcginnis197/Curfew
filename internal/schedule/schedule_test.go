@@ -9,7 +9,7 @@ import (
 )
 
 func TestAnchorSameDay(t *testing.T) {
-	// reset 10:00, 300m window -> anchor 05:00 same day.
+	// reset 10:00, 300m window -> anchor 05:00 same day, plus primer 10:01.
 	c := &config.Config{
 		Providers: []config.Provider{{Name: "claude-1", Command: "x", WindowMinutes: 300}},
 		Schedules: []config.Schedule{{Provider: "claude-1", ResetsAt: []string{"10:00"}, Days: []string{"Mon"}}},
@@ -18,15 +18,51 @@ func TestAnchorSameDay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 {
-		t.Fatalf("want 1 anchor, got %d", len(got))
+	if len(got) != 2 {
+		t.Fatalf("want anchor + primer, got %d entries", len(got))
 	}
 	a := got[0]
+	if a.Primer {
+		t.Error("first entry should be the anchor, not the primer")
+	}
 	if a.Hour != 5 || a.Min != 0 || a.DayShift != 0 {
 		t.Errorf("anchor = %02d:%02d shift %d, want 05:00 shift 0", a.Hour, a.Min, a.DayShift)
 	}
 	if spec := a.CronSpec(); spec != "0 5 * * 1" {
 		t.Errorf("cron = %q, want %q", spec, "0 5 * * 1")
+	}
+	pr := got[1]
+	if !pr.Primer {
+		t.Fatal("second entry should be the primer")
+	}
+	if pr.Hour != 10 || pr.Min != 1 || pr.DayShift != 0 {
+		t.Errorf("primer = %02d:%02d shift %d, want 10:01 shift 0", pr.Hour, pr.Min, pr.DayShift)
+	}
+	if spec := pr.CronSpec(); spec != "1 10 * * 1" {
+		t.Errorf("primer cron = %q, want %q", spec, "1 10 * * 1")
+	}
+}
+
+func TestPrimerCrossesMidnight(t *testing.T) {
+	// reset 23:59 Mon, delay 2 -> primer 00:01 Tue (next day).
+	c := &config.Config{
+		General:   config.General{PrimeDelayMinutes: 2},
+		Providers: []config.Provider{{Name: "p", Command: "x", WindowMinutes: 300}},
+		Schedules: []config.Schedule{{Provider: "p", ResetsAt: []string{"23:59"}, Days: []string{"Mon"}}},
+	}
+	got, err := Compile(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr := got[1]
+	if !pr.Primer {
+		t.Fatal("second entry should be the primer")
+	}
+	if pr.Hour != 0 || pr.Min != 1 || pr.DayShift != 1 {
+		t.Errorf("primer = %02d:%02d shift %d, want 00:01 shift +1", pr.Hour, pr.Min, pr.DayShift)
+	}
+	if len(pr.Weekdays) != 1 || pr.Weekdays[0] != time.Tuesday {
+		t.Errorf("primer weekday = %v, want [Tuesday]", pr.Weekdays)
 	}
 }
 
@@ -72,13 +108,13 @@ func TestAnchorForReset(t *testing.T) {
 		wantH, wantM, ds int
 		wantErr          bool
 	}{
-		{"20:00", 300, 15, 0, 0, false},   // same day
-		{"10:00", 300, 5, 0, 0, false},    // same day
-		{"12:30", 300, 7, 30, 0, false},   // half hour
-		{"02:00", 300, 21, 0, -1, false},  // wraps to prev day
-		{"00:00", 300, 19, 0, -1, false},  // midnight reset
-		{"25:00", 300, 0, 0, 0, true},     // invalid
-		{"bogus", 300, 0, 0, 0, true},     // invalid
+		{"20:00", 300, 15, 0, 0, false},  // same day
+		{"10:00", 300, 5, 0, 0, false},   // same day
+		{"12:30", 300, 7, 30, 0, false},  // half hour
+		{"02:00", 300, 21, 0, -1, false}, // wraps to prev day
+		{"00:00", 300, 19, 0, -1, false}, // midnight reset
+		{"25:00", 300, 0, 0, 0, true},    // invalid
+		{"bogus", 300, 0, 0, 0, true},    // invalid
 	}
 	for _, tc := range cases {
 		a, err := AnchorForReset(tc.win, tc.reset)
@@ -104,9 +140,28 @@ func TestMultipleResetsAndProviders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Default: claude (3 resets) + codex (1) = 4 anchors.
+	// Default: claude (3 resets) + codex (1) = 4 anchors, each with a primer.
+	if len(got) != 8 {
+		t.Fatalf("want 8 entries (4 anchors + 4 primers), got %d", len(got))
+	}
+}
+
+func TestAutoPrimeOff(t *testing.T) {
+	off := false
+	c := config.Default()
+	c.General.AutoPrime = &off
+	got, err := Compile(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Same schedules as TestMultipleResetsAndProviders, but no primers.
 	if len(got) != 4 {
-		t.Fatalf("want 4 anchors, got %d", len(got))
+		t.Fatalf("want 4 anchors (no primers), got %d", len(got))
+	}
+	for _, a := range got {
+		if a.Primer {
+			t.Errorf("unexpected primer with auto_prime off: %s", a.Describe())
+		}
 	}
 }
 

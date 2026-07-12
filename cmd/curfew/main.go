@@ -139,7 +139,7 @@ func cmdService(action string) error {
 	var err error
 	switch action {
 	case "install":
-		err = service.Install()
+		err = service.EnsureRunning()
 	case "uninstall":
 		err = service.Uninstall()
 	case "start":

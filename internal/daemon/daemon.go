@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/kyle/curfew/internal/api"
 	"github.com/kyle/curfew/internal/config"
 	"github.com/kyle/curfew/internal/model"
 	"github.com/kyle/curfew/internal/schedule"
@@ -91,6 +92,10 @@ func Run(ctx context.Context) error {
 	shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutCtx)
+	// Remove the endpoint file synchronously: srv.RegisterOnShutdown runs its
+	// callback in a goroutine that can lose the race with process exit, leaving a
+	// stale daemon.json that makes the TUI report a dead port.
+	api.RemoveEndpoint()
 	d.mu.Lock()
 	if d.cron != nil {
 		d.cron.Stop()
@@ -121,7 +126,7 @@ func (d *Daemon) reload() error {
 			continue
 		}
 		a, p := a, p // capture
-		if _, err := c.AddFunc(a.CronSpec(), func() { d.fire(p, a.Reset, false) }); err != nil {
+		if _, err := c.AddFunc(a.CronSpec(), func() { d.fire(p, a.Reset, false, a.Primer) }); err != nil {
 			return err
 		}
 	}
@@ -138,11 +143,14 @@ func (d *Daemon) reload() error {
 }
 
 // fire anchors a provider, tags the event with the reset it serves, records it,
-// and returns the event.
-func (d *Daemon) fire(p config.Provider, reset string, manual bool) model.Event {
+// and returns the event. primer marks a post-reset fire, recorded as Primed.
+func (d *Daemon) fire(p config.Provider, reset string, manual, primer bool) model.Event {
 	tr := trigger.New(p)
 	ev := tr.Fire(context.Background(), manual)
 	ev.Reset = reset
+	if primer && ev.Outcome == model.Fired {
+		ev.Outcome = model.Primed
+	}
 	if rec, err := d.store.Record(ev); err == nil {
 		ev = rec
 	} else {
@@ -204,6 +212,11 @@ func (d *Daemon) detectMissed() {
 		return
 	}
 	for _, a := range anchors {
+		// A missed primer protects nothing: the next real message simply starts
+		// the window then, so only real anchors are worth surfacing.
+		if a.Primer {
+			continue
+		}
 		prev, err := a.Prev(now)
 		if err != nil || prev.IsZero() {
 			continue

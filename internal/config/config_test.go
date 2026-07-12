@@ -30,6 +30,80 @@ func TestDefaultRoundTrip(t *testing.T) {
 	if len(got.Schedules) != 2 {
 		t.Fatalf("schedules not preserved: %+v", got.Schedules)
 	}
+	if got.General.PrimeDelayMinutes != 1 {
+		t.Errorf("prime_delay_minutes = %d, want 1", got.General.PrimeDelayMinutes)
+	}
+}
+
+func TestPrimeDelayDefault(t *testing.T) {
+	cases := []struct {
+		set  int
+		want int
+	}{
+		{0, 1},  // unset -> default
+		{-3, 1}, // nonsense -> default
+		{1, 1},
+		{5, 5},
+	}
+	for _, tc := range cases {
+		g := General{PrimeDelayMinutes: tc.set}
+		if got := g.PrimeDelay(); got != tc.want {
+			t.Errorf("PrimeDelay() with %d = %d, want %d", tc.set, got, tc.want)
+		}
+	}
+}
+
+func TestAutoPrimeEnabled(t *testing.T) {
+	yes, no := true, false
+	cases := []struct {
+		set  *bool
+		want bool
+	}{
+		{nil, true}, // unset -> enabled (back-compat)
+		{&yes, true},
+		{&no, false},
+	}
+	for _, tc := range cases {
+		g := General{AutoPrime: tc.set}
+		if got := g.AutoPrimeEnabled(); got != tc.want {
+			t.Errorf("AutoPrimeEnabled() with %v = %v, want %v", tc.set, got, tc.want)
+		}
+	}
+}
+
+func TestAutoPrimeRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	// Default leaves auto_prime unset; a load of the saved file stays enabled.
+	orig := Default()
+	if err := orig.Save(path); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !got.General.AutoPrimeEnabled() {
+		t.Fatal("absent auto_prime should stay enabled")
+	}
+
+	// An explicit false survives the round trip.
+	off := false
+	orig.General.AutoPrime = &off
+	if err := orig.Save(path); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	got, err = Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got.General.AutoPrime == nil || *got.General.AutoPrime {
+		t.Fatalf("auto_prime = %v, want explicit false", got.General.AutoPrime)
+	}
+	if got.General.AutoPrimeEnabled() {
+		t.Fatal("explicit false should disable priming")
+	}
 }
 
 func TestLoadMissingReturnsDefault(t *testing.T) {

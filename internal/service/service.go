@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/kardianos/service"
 	"github.com/kyle/curfew/internal/daemon"
@@ -20,11 +21,13 @@ import (
 type program struct {
 	ctx    context.Context
 	cancel context.CancelFunc
+	done   chan struct{} // closed when the daemon goroutine has fully shut down
 }
 
 func (p *program) Start(service.Service) error {
 	// Start must not block; run the daemon in the background.
 	go func() {
+		defer close(p.done)
 		if err := daemon.Run(p.ctx); err != nil {
 			// service logger isn't wired here; stderr is captured by the manager.
 			fmt.Fprintln(os.Stderr, "curfew daemon exited:", err)
@@ -35,6 +38,15 @@ func (p *program) Start(service.Service) error {
 
 func (p *program) Stop(service.Service) error {
 	p.cancel()
+	// Wait for daemon.Run to finish its shutdown (which removes the endpoint
+	// file) before returning: kardianos returns from Run — and the process
+	// exits — as soon as Stop returns, so without this wait the cleanup
+	// goroutine loses the race and leaves a stale endpoint behind. Bounded so a
+	// wedged shutdown can't hang the service manager.
+	select {
+	case <-p.done:
+	case <-time.After(5 * time.Second):
+	}
 	return nil
 }
 
@@ -44,7 +56,7 @@ func build() (service.Service, *program, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	prog := &program{}
+	prog := &program{done: make(chan struct{})}
 	prog.ctx, prog.cancel = context.WithCancel(context.Background())
 	cfg := &service.Config{
 		Name:        "curfew",
@@ -56,11 +68,55 @@ func build() (service.Service, *program, error) {
 			"UserService": true, // systemd --user / macOS LaunchAgent
 			"RunAtLoad":   true, // start at login
 			"KeepAlive":   true, // restart if it exits
+			// kardianos' default systemd template hardcodes
+			// WantedBy=multi-user.target, which the *user* systemd instance never
+			// reaches at login — so a --user service enabled that way never
+			// auto-starts. Override the template to target default.target (and
+			// restart faster). Only the systemd backend reads this key; it is inert
+			// on macOS/Windows.
+			"SystemdScript": systemdScript,
 		},
 	}
 	s, err := service.New(prog, cfg)
 	return s, prog, err
 }
+
+// systemdScript is kardianos' default --user unit template with two changes:
+// WantedBy=default.target (so it auto-starts at login) and a shorter RestartSec.
+// The cmd/cmdEscape template funcs and the .Restart/.Path/.Arguments/.EnvVars
+// fields are provided by kardianos when it executes the template.
+const systemdScript = `[Unit]
+Description={{.Description}}
+ConditionFileIsExecutable={{.Path|cmdEscape}}
+{{range $i, $dep := .Dependencies}}
+{{$dep}} {{end}}
+
+[Service]
+StartLimitInterval=5
+StartLimitBurst=10
+ExecStart={{.Path|cmdEscape}}{{range .Arguments}} {{.|cmd}}{{end}}
+{{if .ChRoot}}RootDirectory={{.ChRoot|cmd}}{{end}}
+{{if .WorkingDirectory}}WorkingDirectory={{.WorkingDirectory|cmdEscape}}{{end}}
+{{if .UserName}}User={{.UserName}}{{end}}
+{{if .ReloadSignal}}ExecReload=/bin/kill -{{.ReloadSignal}} "$MAINPID"{{end}}
+{{if .PIDFile}}PIDFile={{.PIDFile|cmd}}{{end}}
+{{if and .LogOutput .HasOutputFileSupport -}}
+StandardOutput=file:{{.LogDirectory}}/{{.Name}}.out
+StandardError=file:{{.LogDirectory}}/{{.Name}}.err
+{{- end}}
+{{if gt .LimitNOFILE -1 }}LimitNOFILE={{.LimitNOFILE}}{{end}}
+{{if .Restart}}Restart={{.Restart}}{{end}}
+{{if .SuccessExitStatus}}SuccessExitStatus={{.SuccessExitStatus}}{{end}}
+RestartSec=5
+EnvironmentFile=-/etc/sysconfig/{{.Name}}
+
+{{range $k, $v := .EnvVars -}}
+Environment={{$k}}={{$v}}
+{{end -}}
+
+[Install]
+WantedBy=default.target
+`
 
 // RunDaemon is the entry point for `curfew daemon`. When launched by the service
 // manager it hands control to kardianos (which drives Start/Stop); when run
@@ -81,6 +137,30 @@ func Install() error {
 	if err != nil {
 		return err
 	}
+	if err := s.Install(); err != nil {
+		return err
+	}
+	return s.Start()
+}
+
+// EnsureRunning brings the daemon up regardless of the current install state,
+// and is what the TUI's "press enter to install & start" and `curfew install`
+// invoke. kardianos' Install() errors ("Init already exists") if the unit file
+// is present, so a plain Install can't recover a service that's installed but
+// stopped. When already installed we uninstall then reinstall: this both starts
+// it and lands the current unit template (repairing units written by older
+// versions with the wrong WantedBy).
+func EnsureRunning() error {
+	s, _, err := build()
+	if err != nil {
+		return err
+	}
+	// Best-effort teardown first so Install never trips "Init already exists".
+	// This is a no-op (errors ignored) when nothing is installed, and repairs a
+	// stale/failed/wrong-template unit when something is. The reinstall below is
+	// authoritative.
+	_ = s.Stop()
+	_ = s.Uninstall()
 	if err := s.Install(); err != nil {
 		return err
 	}

@@ -15,6 +15,10 @@ Claude's 5h window; chain them for resets at 10:00 / 15:00 / 20:00.
 
 - **State-aware.** Before firing it reads the provider's local session logs and
   skips if a window is already open.
+- **Primed.** A minute after each reset (`prime_delay_minutes`, default 1) it
+  fires again, so the next window starts right at the boundary instead of
+  whenever you send your first message. Toggle with `a` on the dashboard or
+  `auto_prime = false`.
 - **Verified.** The anchor runs your command, confirms a new window appeared,
   and retries with backoff on failure.
 - **Background service.** A per-user service (systemd `--user`, launchd, or Task
@@ -35,10 +39,15 @@ curfew                                          # open the TUI
 
 `curfew` opens a dashboard. Navigation is arrow keys, Enter, and Esc.
 
-- Dashboard: each provider's state and next reset, plus `+ add provider` (name it,
-  then type the command to run).
-- Provider view: fire now, edit the command, add/remove reset times (with their
-  computed anchors shown), toggle weekdays, remove the provider.
+- Dashboard: each provider's state, next reset, and a 0:00→24:00 timeline of
+  today (green = window active, pale ticks = reset times); `a` toggles
+  auto-reset; `+ add provider` (name it, then type the command to run).
+- Provider view: fire now, edit the command, and the reset-time groups — each
+  group is a set of times on a set of weekdays (e.g. 10/15/20:00 on Mon–Fri and
+  a different set on weekends), shown as its own timeline bar.
+- Bar editor: move the cursor with ←/→ (1 h) and ctrl+←/→ (15 min; shift+←/→ or
+  H/L if your terminal swallows ctrl+arrows), Enter adds or removes a reset at
+  the cursor, ↑/↓ switches to the weekday row, `s` saves.
 
 ## Config
 
@@ -47,6 +56,8 @@ curfew                                          # open the TUI
 ```toml
 [general]
 timezone = "local"
+prime_delay_minutes = 1   # fire again this long after each reset
+auto_prime = true         # set false to disable the post-reset primers
 
 [[provider]]
 name    = "claude"

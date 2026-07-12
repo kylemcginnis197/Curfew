@@ -74,7 +74,7 @@ func (d *Daemon) handleFire(w http.ResponseWriter, r *http.Request) {
 	// Fire in the background: anchoring can run for seconds (command + verify)
 	// or minutes (retries), so we don't block the HTTP response. The final
 	// outcome is written to history and surfaces in the next status poll.
-	go d.fire(p, "", true)
+	go d.fire(p, "", true, false)
 	writeJSON(w, model.Event{
 		Provider: p.Name,
 		Outcome:  model.Manual,
@@ -104,9 +104,11 @@ func (d *Daemon) buildStatus() model.Status {
 			ps.WindowEnd = w.End
 		}
 		// Next anchor across this provider's anchors, in the config timezone.
+		// Primers are skipped: NextReset is derived as anchor + window, which
+		// only holds for real anchors.
 		next := time.Time{}
 		for _, a := range anchors {
-			if a.Provider != p.Name {
+			if a.Provider != p.Name || a.Primer {
 				continue
 			}
 			if t, err := a.Next(now.In(loc)); err == nil {

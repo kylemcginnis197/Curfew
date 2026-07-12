@@ -41,7 +41,7 @@ func Presets() map[string]Provider {
 func Default() *Config {
 	work := []string{"Mon", "Tue", "Wed", "Thu", "Fri"}
 	return &Config{
-		General: General{Timezone: "local"},
+		General: General{Timezone: "local", PrimeDelayMinutes: 1},
 		Providers: []Provider{
 			ClaudePreset(),
 			CodexPreset(),

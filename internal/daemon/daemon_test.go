@@ -71,7 +71,7 @@ func writeActiveLog(t *testing.T, dir string, ago time.Duration) {
 func TestFireRecordsFired(t *testing.T) {
 	d := newTestDaemon(t, echoCfg())
 	p, _ := d.cfg.Provider("p")
-	ev := d.fire(p, "10:00", false)
+	ev := d.fire(p, "10:00", false, false)
 	if ev.Outcome != model.Fired {
 		t.Fatalf("outcome = %s, want fired", ev.Outcome)
 	}
@@ -90,6 +90,22 @@ func TestFireRecordsFired(t *testing.T) {
 	}
 }
 
+func TestFirePrimerRecordsPrimed(t *testing.T) {
+	d := newTestDaemon(t, echoCfg())
+	p, _ := d.cfg.Provider("p")
+	ev := d.fire(p, "10:00", false, true)
+	if ev.Outcome != model.Primed {
+		t.Fatalf("outcome = %s, want primed", ev.Outcome)
+	}
+	recent, err := d.store.Recent(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recent) != 1 || recent[0].Outcome != model.Primed {
+		t.Fatalf("history = %+v, want one primed event", recent)
+	}
+}
+
 func TestFireSkipsWhenActive(t *testing.T) {
 	logDir := t.TempDir()
 	writeActiveLog(t, logDir, time.Hour) // window opened 1h ago, 5h window -> active
@@ -99,7 +115,7 @@ func TestFireSkipsWhenActive(t *testing.T) {
 
 	d := newTestDaemon(t, cfg)
 	p, _ := d.cfg.Provider("p")
-	ev := d.fire(p, "10:00", false)
+	ev := d.fire(p, "10:00", false, false)
 	if ev.Outcome != model.Skipped {
 		t.Fatalf("outcome = %s, want skipped (window active)", ev.Outcome)
 	}
@@ -117,7 +133,7 @@ func TestFireManualIgnoresActiveWindow(t *testing.T) {
 
 	d := newTestDaemon(t, cfg)
 	p, _ := d.cfg.Provider("p")
-	ev := d.fire(p, "", true)
+	ev := d.fire(p, "", true, false)
 	if ev.Outcome != model.Manual {
 		t.Fatalf("manual outcome = %s, want manual even with active window", ev.Outcome)
 	}
@@ -189,6 +205,27 @@ func TestBuildStatus(t *testing.T) {
 		t.Error("expected a next anchor time")
 	}
 	// Next reset must be window_minutes after the next anchor.
+	if got := ps.NextReset.Sub(ps.NextAnchor); got != 300*time.Minute {
+		t.Errorf("reset-anchor gap = %v, want 5h", got)
+	}
+}
+
+func TestBuildStatusSkipsPrimers(t *testing.T) {
+	// A reset one minute from now makes its primer (reset+1m) the
+	// chronologically soonest entry. NextAnchor must still point at the real
+	// anchor so NextReset = anchor + window is a true reset boundary.
+	reset := time.Now().Add(1 * time.Minute)
+	d := newTestDaemon(t, echoCfg(reset.Format("15:04")))
+	st := d.buildStatus()
+	ps := st.Providers[0]
+	if ps.NextAnchor.IsZero() {
+		t.Fatal("expected a next anchor time")
+	}
+	// The real anchor fires at reset-300m (next occurrence ~19h away); the
+	// primer at reset+1m. A NextAnchor minutes away means the primer leaked in.
+	if until := time.Until(ps.NextAnchor); until < 10*time.Minute {
+		t.Errorf("NextAnchor %v (in %v) looks like the primer, not the anchor", ps.NextAnchor, until)
+	}
 	if got := ps.NextReset.Sub(ps.NextAnchor); got != 300*time.Minute {
 		t.Errorf("reset-anchor gap = %v, want 5h", got)
 	}
@@ -326,8 +363,8 @@ func TestReload(t *testing.T) {
 	d.mu.Lock()
 	n, cr := len(d.anchors), d.cron
 	d.mu.Unlock()
-	if n != 4 { // default: claude(3) + codex(1)
-		t.Errorf("anchors = %d, want 4", n)
+	if n != 8 { // default: claude(3) + codex(1), each with a primer
+		t.Errorf("anchors = %d, want 8", n)
 	}
 	if cr == nil {
 		t.Fatal("cron engine not built")

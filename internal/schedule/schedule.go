@@ -25,8 +25,11 @@ type Anchor struct {
 	Reset    string         // "HH:MM" reset boundary this serves (for display)
 	Hour     int            // anchor hour (0-23), local to the config timezone
 	Min      int            // anchor minute (0-59)
-	DayShift int            // -1 if the anchor falls on the previous calendar day
-	Weekdays []time.Weekday // anchor weekdays (already shifted from the reset day)
+	DayShift int            // -1/+1 if the fire time falls on the prev/next calendar day
+	Weekdays []time.Weekday // fire weekdays (already shifted from the reset day)
+	// Primer marks an entry that fires just after Reset (rather than
+	// window_minutes before it) so the next window starts on schedule.
+	Primer bool
 }
 
 // CronSpec renders the anchor as a standard 5-field cron expression
@@ -72,14 +75,21 @@ func (a Anchor) Prev(at time.Time) (time.Time, error) {
 // Describe returns a human-readable summary for the TUI/CLI.
 func (a Anchor) Describe() string {
 	when := "same day"
-	if a.DayShift < 0 {
+	switch {
+	case a.DayShift < 0:
 		when = "prev day"
+	case a.DayShift > 0:
+		when = "next day"
+	}
+	if a.Primer {
+		return fmt.Sprintf("%s: prime %02d:%02d (%s) after reset %s", a.Provider, a.Hour, a.Min, when, a.Reset)
 	}
 	return fmt.Sprintf("%s: anchor %02d:%02d (%s) -> reset %s", a.Provider, a.Hour, a.Min, when, a.Reset)
 }
 
-// Compile turns every schedule in the config into anchor jobs. Anchors for the
-// same provider+reset time are grouped across weekdays into a single entry.
+// Compile turns every schedule in the config into anchor jobs. Each reset time
+// yields the anchor that starts its window plus, when auto-prime is enabled, a
+// primer that fires just after the reset so the next window starts on schedule.
 func Compile(c *config.Config) ([]Anchor, error) {
 	var out []Anchor
 	for _, s := range c.Schedules {
@@ -88,11 +98,20 @@ func Compile(c *config.Config) ([]Anchor, error) {
 			return nil, fmt.Errorf("schedule references unknown provider %q", s.Provider)
 		}
 		for _, r := range s.ResetsAt {
-			a, err := anchorFor(s, p.WindowMinutes, r)
+			a, err := anchorFor(s, -p.WindowMinutes, r)
 			if err != nil {
 				return nil, err
 			}
 			out = append(out, a)
+
+			if c.General.AutoPrimeEnabled() {
+				pr, err := anchorFor(s, c.General.PrimeDelay(), r)
+				if err != nil {
+					return nil, err
+				}
+				pr.Primer = true
+				out = append(out, pr)
+			}
 		}
 	}
 	return out, nil
@@ -103,29 +122,39 @@ func Compile(c *config.Config) ([]Anchor, error) {
 // the core reset→anchor math, handy for displaying "reset 20:00 → anchor 15:00"
 // in the editor. DayShift is -1 when the anchor wraps to the previous day.
 func AnchorForReset(windowMinutes int, reset string) (Anchor, error) {
+	return offsetFromReset(-windowMinutes, reset)
+}
+
+// offsetFromReset computes the fire time offsetMin minutes after (negative:
+// before) a reset time, wrapping DayShift by whole days as needed.
+func offsetFromReset(offsetMin int, reset string) (Anchor, error) {
 	h, m, err := parseHHMM(reset)
 	if err != nil {
 		return Anchor{}, fmt.Errorf("reset %q: %w", reset, err)
 	}
-	anchorMin := h*60 + m - windowMinutes
+	fireMin := h*60 + m + offsetMin
 	dayShift := 0
-	for anchorMin < 0 {
-		anchorMin += 24 * 60
+	for fireMin < 0 {
+		fireMin += 24 * 60
 		dayShift--
+	}
+	for fireMin >= 24*60 {
+		fireMin -= 24 * 60
+		dayShift++
 	}
 	return Anchor{
 		Reset:    reset,
-		Hour:     anchorMin / 60,
-		Min:      anchorMin % 60,
+		Hour:     fireMin / 60,
+		Min:      fireMin % 60,
 		DayShift: dayShift,
 	}, nil
 }
 
-// anchorFor computes the anchor for a single reset time within a schedule,
-// shifting the schedule's weekdays back a day when the anchor wraps past
-// midnight.
-func anchorFor(s config.Schedule, windowMin int, reset string) (Anchor, error) {
-	a, err := AnchorForReset(windowMin, reset)
+// anchorFor computes the fire time offsetMin from a reset time within a
+// schedule, shifting the schedule's weekdays when the fire time wraps past
+// midnight in either direction.
+func anchorFor(s config.Schedule, offsetMin int, reset string) (Anchor, error) {
+	a, err := offsetFromReset(offsetMin, reset)
 	if err != nil {
 		return Anchor{}, fmt.Errorf("provider %s: %w", s.Provider, err)
 	}
